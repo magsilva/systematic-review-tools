@@ -68,5 +68,4 @@ if __name__ == "__main__":
     bibtex_filter.add_field('Abstract', ['abstract'], '')
     bibtex_filter.add_field('Year', ['year'], 0)
     bibtex_filter.add_field('PDF Link',['doi', 'url'], '')
-    bibtex_filter.add_field('label', ['paper_is_selected'], 'no')
     bibtex_filter.run()
