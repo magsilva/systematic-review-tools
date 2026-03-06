@@ -10,6 +10,41 @@ from bibtexparser.customization import *
 import os.path
 import sys
 
+import re
+import unicodedata
+
+class BibtexLinter(object):
+
+    def __init__(self):
+        self.input_bibtex_file = None
+        self.output_bibtex_file = None
+
+    def normalize_id(self, text):
+        text = unicodedata.normalize("NFKD", text)
+        text = text.encode("ascii", "ignore").decode("ascii")
+        text = re.sub(r"\s+", "", text)
+        return text
+
+    def replace_id(self, match):
+        entry_type = match.group(1)
+        entry_id = match.group(2)
+        new_id = self.normalize_id(entry_id)
+        return f"@{entry_type}{{{new_id},"
+
+    def set_input_file(self, bibtex_filename):
+        self.input_bibtex_file = bibtex_filename
+
+    def set_output_file(self, bibtex_filename):
+        self.output_bibtex_file = bibtex_filename
+
+    def fix(self):
+        with open(self.input_bibtex_file, encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+            content = re.sub(r"@(\w+)\{([^,]+),", self.replace_id, content)
+        with open(self.output_bibtex_file, "w", encoding="utf-8") as f:
+            f.write(content)
+
+
 class BibtexFilter(object):
 
     def __init__(self):
@@ -73,6 +108,9 @@ class BibtexFilter(object):
                     veredict &= result
                 if veredict:
                     final_database.entries.append(entry)
+                else:
+                    print("Ignoring paper", entry['ID'])
+
                 try:
                     csv_row = [entry['ID'], entry['doi'], entry['plain_title'], entry['plain_abstract']]
                 except:
@@ -91,8 +129,14 @@ if __name__ == "__main__":
     bibtex_filename = sys.argv[1]
     basename = os.path.basename(bibtex_filename)
     (filename, extension) = os.path.splitext(basename)
+
+    bibtex_linter = BibtexLinter()
+    bibtex_linter.set_input_file(bibtex_filename)
+    bibtex_linter.set_output_file(filename + '.clean.bib')
+    bibtex_linter.fix()
+
     bibtex_filter = BibtexFilter()
-    bibtex_filter.set_input_file(bibtex_filename)
+    bibtex_filter.set_input_file(filename + '.clean.bib')
     bibtex_filter.set_output_csv_file(filename + '.csv')
     bibtex_filter.set_output_bibtex_file(filename + '.filtered.bib')
     bibtex_filter.add_search_field('title')
