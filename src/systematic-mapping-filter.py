@@ -18,10 +18,16 @@ class BibtexFilter(object):
         self.output_csv_file = None
         self.search_terms = {}
         self.search_fields = []
+        self.casefold_term = True
 
     def has_term(self, entry, field, term):
         try:
-            if term.casefold() in entry[field].casefold():
+            if self.casefold_term:
+                term = term.casefold()
+                field_content = entry[field].casefold()
+            else:
+                field_content = entry[field]
+            if term in field_content:
                 return True
         except KeyError:
             pass
