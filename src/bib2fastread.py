@@ -85,6 +85,7 @@ if __name__ == "__main__":
     bibtex_filter = BibtexFilter()
     bibtex_filter.set_input_file(bibtex_filename)
     bibtex_filter.set_output_csv_file(filename + '.csv')
+    bibtex_filter.add_entry_type('conference')
     bibtex_filter.add_entry_type('inproceedings')
     bibtex_filter.add_entry_type('article')
     bibtex_filter.add_field('Document Title', ['title'], '', True)
