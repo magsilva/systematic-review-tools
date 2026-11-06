@@ -1,5 +1,39 @@
 # Systematic review tools
 
+## Filter BibTeX entries by criteria
+
+Install `requirements-bibtex.txt` if needed, then include only selected types:
+
+```sh
+.venv/bin/python src/filter_bibtex.py papers.bib --output selected.bib \
+  --include-type inproceedings article
+```
+
+Or exclude types:
+
+```sh
+.venv/bin/python src/filter_bibtex.py papers.bib --output selected.bib \
+  --exclude-type book
+```
+
+Both options accept multiple values and can be repeated. Entry type names are
+case-insensitive; use names without `@`. Exclusion takes priority over inclusion.
+With no inclusion option, all types are eligible; with neither option, all entries
+are copied. The console reports counts read, kept, and excluded. An empty result
+is valid and produces an empty bibliography. The output must differ from the
+input; it is written atomically, and its parent directory must already exist.
+
+Entry order, citation keys, fields, and preambles are preserved semantically;
+formatting may change and string macros are expanded. References to filtered-out
+entries are preserved and produce warnings. Errors go to stderr and
+`filter_bibtex.log` (override with `--log-file`); parsing errors include the file
+and line number. Exit status is 0 on success and 1 on failure.
+
+For additional criteria, implement `Criterion.accepts(entry)` and pass instances
+to `filter_entries(entries, criteria)` or `filter_file(input, output, criteria)`.
+Every criterion must accept an entry for it to be retained. `EntryTypeCriterion`
+provides the current include/exclude type rules.
+
 ## Download PDFs from a BibTeX file
 
 The CLI displays tqdm progress bars by default: an entry counter with downloaded,
