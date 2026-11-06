@@ -30,6 +30,13 @@ references produce warnings. Errors and conflict warnings go to stderr and
 `merge_bibtex.log` (override with `--log-file`). Exit status is 0 on success and
 1 on failure. The console reports the input, output, and merged duplicate counts.
 
+BibTeX parsing errors in merges and ACM imports include the input filename and
+one-based line number in both stderr and the log, for example
+`papers.bib: line 42: Unparsed content or comments ...`. For a malformed entry
+or block, the line identifies its beginning; missing-title and macro-expansion
+errors identify the related entry/declaration. These diagnostics retain original
+line numbers when literal braces are normalized during merging.
+
 ## Console application
 
 Run the complete keyword-to-BibTeX workflow with:

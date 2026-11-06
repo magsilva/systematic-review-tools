@@ -11,6 +11,8 @@ import tempfile
 import unicodedata
 from urllib.parse import unquote
 
+from bibtex_io import parse_bibtex
+
 
 def normalize_doi(value):
     value = unquote(value.strip()).casefold()
@@ -161,7 +163,6 @@ def merge_files(inputs, output, logger=None):
     """Parse all inputs before atomically replacing the output; return counts."""
     import bibtexparser
     from bibtexparser.bibdatabase import BibDatabase
-    from bibtexparser.bparser import BibTexParser
     from bibtexparser.bwriter import BibTexWriter
 
     output = Path(output)
@@ -169,12 +170,8 @@ def merge_files(inputs, output, logger=None):
         raise ValueError('Output must differ from all input files.')
     sources, preambles = [], []
     for path in inputs:
-        parser = BibTexParser(common_strings=True)
-        parser.ignore_nonstandard_types = False
         content = balance_literal_braces(Path(path).read_text(encoding='utf-8-sig'))
-        database = bibtexparser.loads(content, parser=parser)
-        if database.comments:
-            raise ValueError('Unparsed content or comments in %s; check the BibTeX file.' % path)
+        database = parse_bibtex(content, path)
         sources.append(database.entries)
         preambles.extend(p for p in database.preambles if p not in preambles)
     database = BibDatabase()

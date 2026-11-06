@@ -10,6 +10,8 @@ import tempfile
 from urllib.parse import urlencode
 import webbrowser
 
+from bibtex_io import parse_bibtex
+
 
 def build_search_url(query):
     """Pass the canonical Boolean expression to ACM's web search interface."""
@@ -20,20 +22,9 @@ def build_search_url(query):
 
 def import_bibtex(source, output):
     """Validate and atomically copy a user-exported BibTeX file unchanged."""
-    import bibtexparser
-
     source, output = Path(source), Path(output)
     content = source.read_text(encoding='utf-8-sig')
-    parser = bibtexparser.bparser.BibTexParser(common_strings=True)
-    parser.ignore_nonstandard_types = False
-    database = bibtexparser.loads(content, parser=parser)
-    if not database.entries or any(not entry.get('title') for entry in database.entries):
-        raise ValueError('Export must contain BibTeX entries with titles; '
-                         'HTML/error pages and empty exports are not accepted.')
-    # The parser is permissive: ensure it did not silently discard broken entries.
-    if database.comments:
-        raise ValueError('Export contains unparsed content or comments. '
-                         'Check that the complete ACM BibTeX export was downloaded.')
+    database = parse_bibtex(content, source, require_titles=True)
     if source.resolve() == output.resolve():
         return len(database.entries)
     temporary = None
