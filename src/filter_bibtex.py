@@ -59,7 +59,15 @@ class PicoCriterion(Criterion):
             return True
         from pylatexenc.latex2text import LatexNodes2Text
         decoder = LatexNodes2Text()
-        fields = [decoder.latex_to_text(entry.get(field, '')).casefold()
+        def searchable_text(value):
+            # Bibliographic metadata uses percent signs as text, not TeX comments.
+            # Preserve already-escaped signs and handle even backslash runs too.
+            value = re.sub(r'(\\*)%',
+                           lambda match: match[1] + ('\\' if len(match[1]) % 2 == 0 else '') + '%',
+                           value)
+            return decoder.latex_to_text(value).casefold()
+
+        fields = [searchable_text(entry.get(field, ''))
                   for field in ('title', 'abstract', 'keywords')]
         return all(any(term in text for term in terms for text in fields)
                    for terms in self.components.values() if terms)

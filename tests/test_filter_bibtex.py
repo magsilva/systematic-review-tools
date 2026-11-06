@@ -48,6 +48,30 @@ class FilterBibtexTests(unittest.TestCase):
                                       intervention=['software engineering']).accepts(entry))
         self.assertEqual(entry, original)
 
+    def test_pico_preserves_text_after_literal_or_escaped_percent(self):
+        criterion = PicoCriterion(population=['neurodiversity'],
+                                  intervention=['software engineering'])
+        for field in ('title', 'abstract', 'keywords'):
+            for percent in ('%', r'\%', r'\\%'):
+                entry = {field: '62.3' + percent + ' neurodiversity in software engineering'}
+                original = dict(entry)
+                with self.subTest(field=field, percent=percent):
+                    self.assertTrue(criterion.accepts(entry))
+                    self.assertEqual(entry, original)
+
+    def test_pico_terms_after_percent_in_affected_abstracts(self):
+        cases = [
+            {'title': 'Understanding Underrepresented Groups in Open Source Software',
+             'abstract': 'Most papers focus on gender (62.3%), while neurodiversity is not studied.'},
+            {'title': 'Challenges of Software Engineers with ADHD',
+             'abstract': 'An estimated 5.0% to 7.1% have ADHD. We study software engineering.'},
+        ]
+        criterion = PicoCriterion(population=['neurodiversity', 'ADHD'],
+                                  intervention=['open source software', 'software engineering'])
+        for entry in cases:
+            with self.subTest(title=entry['title']):
+                self.assertTrue(criterion.accepts(entry))
+
     def test_cli_pico_combines_with_type_filter_and_preserves_metadata(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output, log = (Path(folder)/p for p in ('in.bib', 'out.bib', 'log'))
