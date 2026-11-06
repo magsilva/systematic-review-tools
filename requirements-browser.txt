@@ -1,0 +1,2 @@
+-r requirements-pdf-download.txt
+playwright>=1.40,<2

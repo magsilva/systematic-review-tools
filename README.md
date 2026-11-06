@@ -65,8 +65,18 @@ no HTTP fallback. Browser download attempts obey the same queue rate limit.
 For other entries, the downloader tries `pdf`, `pdf_url`, `url`, and DOI
 in that order. DOI links are resolved through doi.org. HTML landing pages are
 inspected for `citation_pdf_url` metadata and explicit PDF links; JavaScript is
-not executed. Access requiring a browser login, CAPTCHA, or unavailable
-subscription may fail and is logged. This script does not guarantee that every
+not executed by the HTTP client. If an HTTP attempt fails (including invalid PDF
+responses or landing pages without PDF links), that URL is queued for one browser
+attempt. Transient HTTP status retries are exhausted first. The fallback opens
+the same URL in the dedicated browser, allowing normal redirects and inspecting
+rendered PDF metadata/links. Those discovered links are retrieved in the browser,
+without switching back to HTTP. Each fallback attempt and explicit PDF navigation
+obeys the shared hostname rate limiter. Browser-managed subresources and automatic
+redirect hops are not individually paced. Failed fallbacks are logged and remaining
+candidate URLs are tried; there is no endless HTTP/browser retry loop.
+Install `requirements-browser.txt` and Playwright Chromium for this fallback too.
+Access requiring a browser login, CAPTCHA, or unavailable
+subscription may still fail and is logged. This script does not guarantee that every
 paper has an accessible PDF.
 
 Downloads are paced **per hostname**, with a default limit of **2 requests per

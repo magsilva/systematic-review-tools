@@ -189,6 +189,48 @@ class PdfDownloadTests(unittest.TestCase):
                               ('https://a.test/2', 30)])
             self.assertTrue(all(Path(j.entry['file']).read_bytes() == PDF for j in jobs))
 
+    def test_http_failure_queues_rate_limited_browser_fallback(self):
+        for response in (Response(status=403), Response(status=202),
+                         Response(b'<html>No PDF here</html>'),
+                         Response(b'%PDF-1.4\ntruncated'), OSError('Connection failed')):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as folder:
+                clock = Clock()
+                job = self.job(folder, 'fallback', 'https://pub.test/paper')
+                session = Session({'https://pub.test/paper': response}, clock)
+                starts = []
+                def browser(url, timeout, max_bytes):
+                    starts.append((url, clock()))
+                    return PDF
+                self.assertEqual(download_queue([job], session, HostRateLimiter(clock=clock),
+                                               self.logger, browser_fallback=browser,
+                                               sleep=clock.sleep), (1, 0))
+                self.assertEqual(starts, [('https://pub.test/paper', 30)])
+                self.assertEqual(len(session.calls), 1)
+                self.assertEqual(Path(job.entry['file']).read_bytes(), PDF)
+
+    def test_browser_fallback_failure_is_not_repeated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clock = Clock()
+            job = self.job(folder, 'bad', 'https://pub.test/paper')
+            session = Session({'https://pub.test/paper': Response(status=403)}, clock)
+            browser = Mock(side_effect=RuntimeError('Browser denied access'))
+            self.assertEqual(download_queue([job], session, HostRateLimiter(clock=clock),
+                                           self.logger, browser_fallback=browser,
+                                           sleep=clock.sleep), (0, 1))
+            browser.assert_called_once()
+            self.assertEqual(len(session.calls), 1)
+            self.assertNotIn('file', job.entry)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_successful_http_download_does_not_invoke_browser_fallback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            job = self.job(folder, 'good', 'https://pub.test/paper.pdf')
+            browser = Mock()
+            self.assertEqual(download_queue([job], Session({'https://pub.test/paper.pdf': Response(PDF)}),
+                                           HostRateLimiter(), self.logger,
+                                           browser_fallback=browser), (1, 0))
+            browser.assert_not_called()
+
     def test_redirect_and_discovery_requests_are_rate_limited(self):
         with tempfile.TemporaryDirectory() as folder:
             clock = Clock()

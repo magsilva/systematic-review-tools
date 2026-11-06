@@ -121,6 +121,7 @@ class DownloadJob:
     visited: set = field(default_factory=set)
     retries: dict = field(default_factory=dict)
     requests: int = 0
+    browser_urls: set = field(default_factory=set)
 
 
 def pdf_filename(entry):
@@ -176,7 +177,8 @@ def retry_after(value):
 
 
 def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*1024*1024,
-                   max_retries=2, sleep=time.sleep, browser_download=None):
+                   max_retries=2, sleep=time.sleep, browser_download=None,
+                   browser_fallback=None):
     """Process one HTTP request per queue turn; redirects share the same limiter."""
     pending = list(jobs)
     downloaded, failed = 0, 0
@@ -205,11 +207,13 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         job.requests += 1
         limiter.started(url)
         success = False
+        using_browser = is_acm_entry(job.entry) or url in job.browser_urls
         try:
-            if is_acm_entry(job.entry):
-                if browser_download is None:
-                    raise RuntimeError('ACM downloads require the browser transport.')
-                data = browser_download(url, timeout, max_bytes)
+            if using_browser:
+                transport = browser_download if is_acm_entry(job.entry) else browser_fallback
+                if transport is None:
+                    raise RuntimeError('Browser download transport is not available.')
+                data = transport(url, timeout, max_bytes)
                 save_pdf(job.destination, data, iter(()), max_bytes)
                 job.entry['file'] = str(job.destination.resolve())
                 downloaded += 1
@@ -261,6 +265,11 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                             raise ValueError('Response is not a PDF and advertises no PDF link.')
         except Exception as error:
             logger.error('Download failed for %s at %s: %s', job.entry['ID'], url, error)
+            if not using_browser and browser_fallback is not None and url not in job.browser_urls:
+                job.browser_urls.add(url)
+                job.visited.discard(url)
+                job.urls.appendleft(url)
+                logger.info('Queued browser fallback for %s at %s', job.entry['ID'], url)
         if success:
             job.entry['file'] = str(job.destination.resolve())
             downloaded += 1
@@ -291,7 +300,7 @@ def write_bibtex(database, output):
 def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     max_bytes=100*1024*1024, max_retries=2,
                     browser_profile=Path('.pdf-browser'), browser_download=None,
-                    sources=None, exclude_sources=None):
+                    sources=None, exclude_sources=None, browser_fallback=None):
     import requests
     source, output, directory = Path(source), Path(output), Path(directory)
     database = parse_bibtex(source.read_text(encoding='utf-8-sig'), source)
@@ -328,16 +337,20 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
         jobs.append(DownloadJob(entry, destination, deque(urls)))
     try:
         with ExitStack() as stack:
-            if browser_download is None:
+            if browser_download is None or browser_fallback is None:
                 from browser_pdf import BrowserPdfDownloader
                 browser = stack.enter_context(BrowserPdfDownloader(browser_profile))
-                browser_download = browser.download
+                if browser_download is None:
+                    browser_download = browser.download
+                if browser_fallback is None:
+                    browser_fallback = lambda url, timeout, max_bytes: browser.download(
+                        url, timeout, max_bytes, strict=False, limiter=limiter)
             session = stack.enter_context(requests.Session())
             session.headers.update({'User-Agent': 'systematic-review-tools/pdf-downloader',
                                     'Accept': 'application/pdf,text/html;q=0.9,*/*;q=0.5'})
             downloaded, failed = download_queue(jobs, session, limiter, logger,
                 timeout=timeout, max_bytes=max_bytes, max_retries=max_retries,
-                browser_download=browser_download)
+                browser_download=browser_download, browser_fallback=browser_fallback)
     finally:
         # Preserve completed file annotations even on Ctrl-C or an unexpected failure.
         write_bibtex(database, output)
