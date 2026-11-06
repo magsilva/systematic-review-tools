@@ -8,6 +8,36 @@
   --output neurodivergent-sw-eng-with-files.bib --pdf-dir ./pdfs
 ```
 
+Restrict downloads by source with `--source`:
+
+```sh
+.venv/bin/python src/download_pdfs.py papers.bib --output papers-with-files.bib \
+  --pdf-dir ./pdfs --source ACM
+```
+
+Use `--source ACM Scopus` or repeat `--source` to allow multiple sources.
+Matching ignores case and surrounding whitespace and accepts any source in an
+entry's semicolon-separated set. Inferred ACM sources based on publisher also
+qualify. Entries with missing/unknown sources are skipped when a filter is
+specified. Skipped entries remain in the output with their existing metadata
+and file fields unchanged; they make no requests and do not count as failures.
+The skipped count is logged. Without `--source`, all entries are considered.
+The filter controls eligibility only: an entry with `ACM; Scopus` still uses
+ACM browser download rules even when selected through `--source Scopus`.
+
+Exclude sources with `--exclude-source`:
+
+```sh
+.venv/bin/python src/download_pdfs.py papers.bib --output papers-with-files.bib \
+  --pdf-dir ./pdfs --exclude-source ACM
+```
+
+You can list multiple excluded sources or repeat the option. Exclusions take
+priority over `--source`: `--source Scopus --exclude-source ACM` skips entries
+with `ACM; Scopus` as well. Matching is case-insensitive and includes inferred
+ACM sources. With exclusions alone, entries without a source remain eligible.
+Excluded entries are preserved unchanged in the output and do not count as failures.
+
 For entries whose semicolon-separated `source` includes ACM (case-insensitive),
 the downloader uses a visible browser to retrieve only
 `https://dl.acm.org/doi/pdf/<DOI>`. Other URL fields are

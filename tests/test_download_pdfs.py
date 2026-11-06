@@ -12,7 +12,7 @@ import bibtexparser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from download_pdfs import (DownloadJob, HostRateLimiter, candidate_urls, download_bibtex,
-                           download_queue, main, pdf_filename)
+                           download_queue, main, matches_sources, pdf_filename)
 
 
 PDF = b'%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n'
@@ -70,6 +70,104 @@ class Session:
 
 
 class PdfDownloadTests(unittest.TestCase):
+    def test_source_filter_matches_any_source_and_inferred_acm(self):
+        self.assertTrue(matches_sources({'source': 'ACM; Scopus'}, {'scopus'}))
+        self.assertTrue(matches_sources({'publisher': 'Association for Computing Machinery'}, {'acm'}))
+        self.assertFalse(matches_sources({'source': 'Scopus', 'publisher': 'ACM'}, {'acm'}))
+        self.assertFalse(matches_sources({}, {'acm'}))
+        self.assertTrue(matches_sources({}, None))
+
+    def test_source_filter_skips_without_requests_or_metadata_changes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, directory = (Path(folder) / p for p in ('in.bib', 'out.bib', 'pdfs'))
+            source.write_text('@article{a, title={Selected}, source={Scopus}, url={https://pub.test/a}}\n'
+                              '@article{b, title={Skipped}, publisher={ACM}, file={previous.pdf}}\n'
+                              '@article{c, title={Unknown}}')
+            session = Session({'https://pub.test/a': Response(PDF)})
+            backend = Mock()
+            with patch('requests.Session', return_value=session):
+                counts = download_bibtex(source, output, directory, self.logger,
+                                         sources=[' SCOPUS '], browser_download=backend)
+            self.assertEqual(counts, (1, 0, 0))
+            self.assertEqual(len(session.calls), 1)
+            backend.assert_not_called()
+            original = bibtexparser.loads(source.read_text()).entries
+            actual = bibtexparser.loads(output.read_text()).entries
+            self.assertEqual(actual[1:], original[1:])
+            self.assertIn('file', actual[0])
+
+    def test_source_cli_accepts_multiple_and_repeated_options(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch('download_pdfs.download_bibtex', return_value=(0, 0, 0)) as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                status = main(['in.bib', '-o', str(Path(folder) / 'out.bib'),
+                               '--pdf-dir', str(Path(folder) / 'pdfs'),
+                               '--log-file', str(Path(folder) / 'log'),
+                               '--source', 'ACM', 'Scopus', '--source', 'IEEE',
+                               '--exclude-source', 'ACM', 'IEEE', '--exclude-source', 'Other'])
+            self.assertEqual(status, 0)
+            self.assertEqual(run.call_args.kwargs['sources'], ['ACM', 'Scopus', 'IEEE'])
+            self.assertEqual(run.call_args.kwargs['exclude_sources'], ['ACM', 'IEEE', 'Other'])
+
+    def test_exclusion_overrides_inclusion_and_preserves_entries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, directory = (Path(folder) / p for p in ('in.bib', 'out.bib', 'pdfs'))
+            source.write_text('@article{a, title={Mixed}, source={ACM; Scopus}, doi={10.1/a}}\n'
+                              '@article{b, title={Inferred}, publisher={ACM}, doi={10.1/b}}\n'
+                              '@article{c, title={Allowed}, source={Scopus}, url={https://pub.test/c}}')
+            backend = Mock()
+            session = Session({'https://pub.test/c': Response(PDF)})
+            with patch('requests.Session', return_value=session):
+                result = download_bibtex(source, output, directory, self.logger,
+                                         sources=['ACM', 'Scopus'], exclude_sources=[' acM '],
+                                         browser_download=backend)
+            self.assertEqual(result, (1, 0, 0))
+            backend.assert_not_called()
+            original = bibtexparser.loads(source.read_text()).entries
+            actual = bibtexparser.loads(output.read_text()).entries
+            self.assertEqual(actual[:2], original[:2])
+            self.assertIn('file', actual[2])
+            self.assertEqual([url for url, _, _ in session.calls], ['https://pub.test/c'])
+
+    def test_exclusion_only_keeps_entries_without_a_source_eligible(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, directory = (Path(folder) / p for p in ('in.bib', 'out.bib', 'pdfs'))
+            source.write_text('@article{a, title={Excluded}, source={ACM}, doi={10.1/a}}\n'
+                              '@article{b, title={Unknown}, url={https://pub.test/b}}')
+            session = Session({'https://pub.test/b': Response(PDF)})
+            backend = Mock()
+            with patch('requests.Session', return_value=session):
+                result = download_bibtex(source, output, directory, self.logger,
+                                         exclude_sources=['ACM'], browser_download=backend)
+            self.assertEqual(result, (1, 0, 0))
+            backend.assert_not_called()
+            self.assertEqual([url for url, _, _ in session.calls], ['https://pub.test/b'])
+
+    def test_cli_excludes_acm_publisher_without_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, directory, log = (Path(folder) / p for p in
+                                               ('in.bib', 'out.bib', 'pdfs', 'download.log'))
+            content = ('@article{inferred-acm, title={An ACM paper}, publisher={ACM}, '
+                       'doi={10.1145/3704637.3734749}}')
+            source.write_text(content)
+            with patch('requests.Session') as session, \
+                    patch('browser_pdf.BrowserPdfDownloader.download') as browser_download, \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                status = main([str(source), '--output', str(output),
+                               '--pdf-dir', str(directory), '--log-file', str(log),
+                               '--exclude-source', 'ACM'])
+            self.assertEqual(status, 0)
+            session.return_value.__enter__.return_value.get.assert_not_called()
+            browser_download.assert_not_called()
+            self.assertEqual(list(directory.iterdir()), [])
+            original = bibtexparser.loads(content).entries
+            actual = bibtexparser.loads(output.read_text()).entries
+            self.assertEqual(actual, original)
+            self.assertNotIn('file', actual[0])
+            self.assertIn('Skipped 1 entries due to source filters.', log.read_text())
+            self.assertIn('Downloaded 0; already saved 0; failed 0.', stdout.getvalue())
+
     def setUp(self):
         self.logger = logging.Logger('test-download')
         self.logger.addHandler(logging.NullHandler())

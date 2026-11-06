@@ -43,6 +43,17 @@ def is_acm_entry(entry):
                for source in entry.get('source', '').split(';'))
 
 
+def matches_sources(entry, sources):
+    """Match any selected source, including inferred ACM, without changing skipped entries."""
+    if sources is None:
+        return True
+    effective = dict(entry)
+    infer_source(effective)
+    names = {name.strip().casefold() for name in effective.get('source', '').split(';')
+             if name.strip()}
+    return bool(names.intersection(sources))
+
+
 def candidate_urls(entry):
     urls = []
     acm = is_acm_entry(entry)
@@ -279,19 +290,28 @@ def write_bibtex(database, output):
 
 def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     max_bytes=100*1024*1024, max_retries=2,
-                    browser_profile=Path('.pdf-browser'), browser_download=None):
+                    browser_profile=Path('.pdf-browser'), browser_download=None,
+                    sources=None, exclude_sources=None):
     import requests
     source, output, directory = Path(source), Path(output), Path(directory)
     database = parse_bibtex(source.read_text(encoding='utf-8-sig'), source)
     limiter = HostRateLimiter(rate)
     directory.mkdir(parents=True, exist_ok=True)
     seen, jobs = set(), []
-    resumed = 0
+    resumed, skipped = 0, 0
+    selected_sources = ({name.strip().casefold() for name in sources if name.strip()}
+                        if sources is not None else None)
+    excluded_sources = {name.strip().casefold() for name in (exclude_sources or ())
+                        if name.strip()}
     for entry in database.entries:
-        infer_source(entry)
         if entry['ID'] in seen:
             raise ValueError('Duplicate citation key: ' + entry['ID'])
         seen.add(entry['ID'])
+        if (matches_sources(entry, excluded_sources)
+                or not matches_sources(entry, selected_sources)):
+            skipped += 1
+            continue
+        infer_source(entry)
         destination = directory / pdf_filename(entry)
         if destination.exists():
             if is_pdf(destination):
@@ -321,6 +341,8 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
     finally:
         # Preserve completed file annotations even on Ctrl-C or an unexpected failure.
         write_bibtex(database, output)
+    if sources is not None or exclude_sources is not None:
+        logger.info('Skipped %d entries due to source filters.', skipped)
     return downloaded, resumed, failed
 
 
@@ -331,11 +353,24 @@ def positive_number(value):
     return result
 
 
+def source_name(value):
+    value = value.strip()
+    if not value:
+        raise argparse.ArgumentTypeError('Source name must not be empty.')
+    return value
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
     parser.add_argument('--output', '-o', type=Path, required=True, help='Updated BibTeX file.')
     parser.add_argument('--pdf-dir', type=Path, required=True)
+    parser.add_argument('--source', dest='sources', nargs='+', action='extend',
+                        type=source_name, metavar='NAME',
+                        help='Only download entries matching any selected source; may be repeated.')
+    parser.add_argument('--exclude-source', dest='exclude_sources', nargs='+', action='extend',
+                        type=source_name, metavar='NAME',
+                        help='Skip entries matching any excluded source; overrides --source; may be repeated.')
     parser.add_argument('--rate-limit', type=positive_number, default=2,
                         help='Requests per minute per hostname (default: 2).')
     parser.add_argument('--timeout', type=positive_number, default=30)
@@ -366,7 +401,8 @@ def main(argv=None):
         downloaded, resumed, failed = download_bibtex(
             args.input, args.output, args.pdf_dir, logger, rate=args.rate_limit,
             timeout=args.timeout, max_bytes=int(args.max_size_mb*1024*1024),
-            max_retries=args.max_retries, browser_profile=args.browser_profile)
+            max_retries=args.max_retries, browser_profile=args.browser_profile,
+            sources=args.sources, exclude_sources=args.exclude_sources)
         print('Downloaded %d; already saved %d; failed %d. BibTeX: %s' %
               (downloaded, resumed, failed, args.output))
         return 1 if failed else 0
