@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Isolated PDF download browser profile (cookies and login state)
+.pdf-browser/

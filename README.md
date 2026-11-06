@@ -1,5 +1,81 @@
 # Systematic review tools
 
+## Download PDFs from a BibTeX file
+
+```sh
+.venv/bin/python -m pip install -r requirements-pdf-download.txt
+.venv/bin/python src/download_pdfs.py neurodivergent-sw-eng.bib \
+  --output neurodivergent-sw-eng-with-files.bib --pdf-dir ./pdfs
+```
+
+For entries whose semicolon-separated `source` includes ACM (case-insensitive),
+the downloader uses a visible browser to retrieve only
+`https://dl.acm.org/doi/pdf/<DOI>`. Other URL fields are
+ignored, and redirects or HTML discovery are not followed. ACM entries without
+a DOI fail without making a request. This also applies to `source = {ACM; Scopus}`.
+ACM entries never fall back to the HTTP client. Install browser support first:
+
+```sh
+.venv/bin/python -m pip install -r requirements-browser.txt
+.venv/bin/python -m playwright install chromium
+```
+
+The console script uses a dedicated visible Chromium session, with a profile
+at `.pdf-browser` (override with `--browser-profile`). It does not share the
+Codex in-app browser's login session. Browser navigation/attachment responses
+are saved and validated before `file` is set. Browser login or security checks
+can still prevent automatic retrieval; these failures are logged and receive
+no HTTP fallback. Browser download attempts obey the same queue rate limit.
+
+For other entries, the downloader tries `pdf`, `pdf_url`, `url`, and DOI
+in that order. DOI links are resolved through doi.org. HTML landing pages are
+inspected for `citation_pdf_url` metadata and explicit PDF links; JavaScript is
+not executed. Access requiring a browser login, CAPTCHA, or unavailable
+subscription may fail and is logged. This script does not guarantee that every
+paper has an accessible PDF.
+
+Downloads are paced **per hostname**, with a default limit of **2 requests per
+minute** (30 seconds between request starts). This includes landing pages,
+redirect hops, failed requests, and retries, so PDF downloads cannot exceed the
+configured rate. Different servers have independent limits; the queue processes
+ready jobs while another server is cooling down. Limits apply to one script
+process, not across multiple concurrent runs. To change the rate:
+
+```sh
+.venv/bin/python src/download_pdfs.py papers.bib --output papers-with-files.bib \
+  --pdf-dir ./pdfs --rate-limit 4
+```
+
+The script honors `Retry-After` on HTTP 429/503 and retries transient HTTP
+429/500/502/503/504 responses up to `--max-retries` times (default 2). Individual
+requests use `--timeout` seconds (default 30). PDF size is limited by
+`--max-size-mb` (default 100); landing pages are limited to 2 MiB, and each entry
+has a maximum of 20 requests to bound redirects and discovery loops.
+
+Files have sanitized citation-key names with a hash suffix to avoid collisions.
+Responses must have a PDF signature and EOF marker before being saved
+atomically; this rejects HTML/login pages and obvious truncation but does not
+fully validate PDF internals. Each successful entry receives, for example:
+
+```bibtex
+file = {/absolute/path/to/pdfs/citation-key-0123456789abcdef.pdf}
+```
+
+Existing valid PDFs at the generated destination are reused on subsequent runs
+and annotated without network requests. Existing invalid destinations cause an
+error rather than being overwritten. The input file is preserved when output
+differs; passing the same path updates the BibTeX file in place atomically.
+BibTeX formatting/string macros may be rewritten, while entry metadata is
+retained. Failed entries receive no new `file` field; existing `file` fields are
+preserved. The updated bibliography is saved after the queue finishes and on
+Ctrl-C, retaining completed downloads. The output's parent directory must exist;
+the PDF directory is created automatically.
+
+Failures go to stderr and `download_pdfs.log` (override with `--log-file`).
+Parsing errors include the input filename and line number. Exit status is 0
+when all entries succeeded or were reused, 1 on any failure, and 130 on Ctrl-C.
+No PDFs are downloaded automatically when installing or testing this script.
+
 ## Merge BibTeX files
 
 ```sh
