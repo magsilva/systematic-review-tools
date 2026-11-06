@@ -19,7 +19,7 @@ import tempfile
 import time
 from urllib.parse import quote, urljoin, urlsplit
 
-from bibtex_io import parse_bibtex
+from bibtex_io import read_bibtex, write_bibtex
 from paper_discovery import (PdfVerificationError, discovery_url, rank_candidates, verify_pdf)
 
 
@@ -407,24 +407,6 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30,
     return downloaded, failed
 
 
-def write_bibtex(database, output):
-    import bibtexparser
-    from bibtexparser.bwriter import BibTexWriter
-    writer = BibTexWriter()
-    writer.contents = ['preambles', 'entries']
-    writer.order_entries_by = None
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
-                                         delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(bibtexparser.dumps(database, writer=writer))
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
-
-
 def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     max_retries=2,
                     browser_profile=Path('.pdf-browser'), browser_download=None,
@@ -432,7 +414,7 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     browser_headless=True, show_progress=False):
     import requests
     source, output, directory = Path(source), Path(output), Path(directory)
-    database = parse_bibtex(source.read_text(encoding='utf-8-sig'), source)
+    database = read_bibtex(source)
     limiter = HostRateLimiter(rate)
     directory.mkdir(parents=True, exist_ok=True)
     seen, jobs = set(), []

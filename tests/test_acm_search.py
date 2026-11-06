@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-import bibtexparser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from bibtex_io import parse_bibtex, new_database, serialize_bibtex
 import acm_search
 import main as application
 
@@ -44,8 +44,8 @@ class AcmSearchTests(unittest.TestCase):
             content = '@article{a, title={A {Study}}, author={Silva, José}, year={2026}}\n'
             source.write_text(content, encoding='utf-8')
             self.assertEqual(acm_search.import_bibtex(source, output), 1)
-            original = bibtexparser.loads(content).entries[0]
-            imported = bibtexparser.loads(output.read_text(encoding='utf-8')).entries[0]
+            original = parse_bibtex(content).entries[0]
+            imported = parse_bibtex(output.read_text(encoding='utf-8')).entries[0]
             self.assertEqual(imported, dict(original, source='ACM'))
             self.assertEqual(source.read_text(encoding='utf-8'), content)
 
@@ -54,7 +54,7 @@ class AcmSearchTests(unittest.TestCase):
             source = Path(folder) / 'export.bib'
             source.write_text('@article{a, title={Test}, source={scopus; ACM; acm}}')
             self.assertEqual(acm_search.import_bibtex(source, source), 1)
-            imported = bibtexparser.loads(source.read_text()).entries[0]
+            imported = parse_bibtex(source.read_text()).entries[0]
             self.assertEqual(imported['source'], 'ACM; Scopus')
             first_export = source.read_bytes()
             acm_search.import_bibtex(source, source)
@@ -93,7 +93,7 @@ class AcmSearchTests(unittest.TestCase):
                 '--import-bibtex', str(source), '--log-file', str(Path(folder) / 'log')])
             self.assertEqual(status, 0)
             self.assertIn('Imported 1 records', stdout.getvalue())
-            self.assertEqual(bibtexparser.loads(output.read_text()).entries[0]['source'], 'ACM')
+            self.assertEqual(parse_bibtex(output.read_text()).entries[0]['source'], 'ACM')
             self.assertEqual(source.read_text(), '@inproceedings{a, title={Test}}')
             browser.assert_not_called()
 

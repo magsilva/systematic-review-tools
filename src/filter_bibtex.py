@@ -5,13 +5,11 @@ from abc import ABC, abstractmethod
 import argparse
 from dataclasses import dataclass
 import logging
-import os
 from pathlib import Path
 import re
 import sys
-import tempfile
 
-from bibtex_io import parse_bibtex
+from bibtex_io import read_bibtex, write_bibtex
 
 
 class Criterion(ABC):
@@ -48,13 +46,10 @@ def filter_entries(entries, criteria):
 
 def filter_file(source, output, criteria, logger=None):
     """Read strictly, evaluate criteria, and atomically save to a different file."""
-    import bibtexparser
-    from bibtexparser.bwriter import BibTexWriter
-
     source, output = Path(source), Path(output)
     if source.resolve() == output.resolve() or (output.exists() and source.samefile(output)):
         raise ValueError('Output must be a different file from the input.')
-    database = parse_bibtex(source.read_text(encoding='utf-8-sig'), source)
+    database = read_bibtex(source)
     original = database.entries
     database.entries = filter_entries(original, criteria)
     removed = {entry['ID'] for entry in original} - {entry['ID'] for entry in database.entries}
@@ -64,20 +59,7 @@ def filter_file(source, output, criteria, logger=None):
                 if entry.get(field) in removed:
                     logger.warning('%s refers to filtered-out entry %s through %s',
                                    entry['ID'], entry[field], field)
-    writer = BibTexWriter()
-    writer.contents = ['preambles', 'entries']
-    writer.order_entries_by = None
-    content = bibtexparser.dumps(database, writer=writer)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         dir=output.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(content)
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+    write_bibtex(database, output)
     return len(original), len(database.entries)
 
 

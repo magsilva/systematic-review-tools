@@ -1,11 +1,7 @@
 #!/usr/bin/python3
 
 import csv
-import bibtexparser
-from bibtexparser.bparser import BibTexParser
-from bibtexparser.bwriter import BibTexWriter
-from bibtexparser.bibdatabase import BibDatabase
-from bibtexparser.customization import *
+from bibtex_io import read_bibtex, new_database, write_bibtex
 
 import os.path
 import sys
@@ -25,12 +21,6 @@ class BibtexLinter(object):
         text = re.sub(r"\s+", "", text)
         return text
 
-    def replace_id(self, match):
-        entry_type = match.group(1)
-        entry_id = match.group(2)
-        new_id = self.normalize_id(entry_id)
-        return f"@{entry_type}{{{new_id},"
-
     def set_input_file(self, bibtex_filename):
         self.input_bibtex_file = bibtex_filename
 
@@ -38,11 +28,16 @@ class BibtexLinter(object):
         self.output_bibtex_file = bibtex_filename
 
     def fix(self):
-        with open(self.input_bibtex_file, encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-            content = re.sub(r"@(\w+)\{([^,]+),", self.replace_id, content)
-        with open(self.output_bibtex_file, "w", encoding="utf-8") as f:
-            f.write(content)
+        database = read_bibtex(self.input_bibtex_file)
+        keys = {entry['ID']: self.normalize_id(entry['ID']) for entry in database.entries}
+        if not all(keys.values()) or len(set(keys.values())) != len(keys):
+            raise ValueError('Normalizing citation keys produced empty or duplicate keys.')
+        for entry in database.entries:
+            entry['ID'] = keys[entry['ID']]
+            for field in ('crossref', 'xref'):
+                if field in entry:
+                    entry[field] = keys.get(entry[field], entry[field])
+        write_bibtex(database, self.output_bibtex_file)
 
 
 class BibtexFilter(object):
@@ -84,10 +79,8 @@ class BibtexFilter(object):
         self.output_bibtex_file = bibtex_filename
 
     def apply_filters(self):
-        parser = BibTexParser(ignore_nonstandard_types = False, homogenize_fields = False, common_strings = True, customization = add_plaintext_fields)
-        with open(self.input_bibtex_file) as bibtex_input_file:
-            raw_database = parser.parse_file(bibtex_input_file)
-        final_database = BibDatabase()
+        raw_database = read_bibtex(self.input_bibtex_file, plaintext=True)
+        final_database = new_database(preambles=raw_database.preambles)
 
         with open(self.output_csv_file, 'w', newline='') as csvfile:
             csvwriter = csv.writer(csvfile, delimiter=',',quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -119,10 +112,7 @@ class BibtexFilter(object):
                     csv_row.append(search_results[category])
                 csvwriter.writerow(csv_row)
 
-                writer = BibTexWriter()
-                writer.indent = '    '
-                with open(self.output_bibtex_file, 'w') as bibtex_output_file:
-                    bibtex_output_file.write(writer.write(final_database))
+        write_bibtex(final_database, self.output_bibtex_file, indent='    ')
 
 
 if __name__ == "__main__":

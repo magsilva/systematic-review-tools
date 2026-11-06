@@ -8,9 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-import bibtexparser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from bibtex_io import parse_bibtex, new_database, serialize_bibtex
 from download_pdfs import (DownloadJob, HostRateLimiter, candidate_urls, download_bibtex,
                            download_queue, main, matches_sources, pdf_filename)
 from paper_discovery import discovery_url
@@ -102,8 +102,8 @@ class PdfDownloadTests(unittest.TestCase):
             self.assertEqual(counts, (1, 0, 0))
             self.assertEqual(len(session.calls), 1)
             backend.assert_not_called()
-            original = bibtexparser.loads(source.read_text()).entries
-            actual = bibtexparser.loads(output.read_text()).entries
+            original = parse_bibtex(source.read_text()).entries
+            actual = parse_bibtex(output.read_text()).entries
             self.assertEqual(actual[1:], original[1:])
             self.assertIn('file', actual[0])
 
@@ -134,8 +134,8 @@ class PdfDownloadTests(unittest.TestCase):
                                          browser_download=backend)
             self.assertEqual(result, (1, 0, 0))
             backend.assert_not_called()
-            original = bibtexparser.loads(source.read_text()).entries
-            actual = bibtexparser.loads(output.read_text()).entries
+            original = parse_bibtex(source.read_text()).entries
+            actual = parse_bibtex(output.read_text()).entries
             self.assertEqual(actual[:2], original[:2])
             self.assertIn('file', actual[2])
             self.assertEqual([url for url, _, _ in session.calls], ['https://pub.test/c'])
@@ -172,8 +172,8 @@ class PdfDownloadTests(unittest.TestCase):
             session.return_value.__enter__.return_value.get.assert_not_called()
             browser_download.assert_not_called()
             self.assertEqual(list(directory.iterdir()), [])
-            original = bibtexparser.loads(content).entries
-            actual = bibtexparser.loads(output.read_text()).entries
+            original = parse_bibtex(content).entries
+            actual = parse_bibtex(output.read_text()).entries
             self.assertEqual(actual, original)
             self.assertNotIn('file', actual[0])
             self.assertIn('Skipped 1 entries due to source filters.', log.read_text())
@@ -347,10 +347,10 @@ class PdfDownloadTests(unittest.TestCase):
             with patch('requests.Session', return_value=session):
                 self.assertEqual(download_bibtex(source, output, directory, self.logger), (1, 0, 0))
                 self.assertEqual(download_bibtex(output, output, directory, self.logger), (0, 1, 0))
-            entry = bibtexparser.loads(output.read_text()).entries[0]
+            entry = parse_bibtex(output.read_text()).entries[0]
             self.assertEqual(entry['source'], 'Scopus')
             self.assertEqual(Path(entry['file']).read_bytes(), PDF)
-            self.assertNotIn('file', bibtexparser.loads(source.read_text()).entries[0])
+            self.assertNotIn('file', parse_bibtex(source.read_text()).entries[0])
             self.assertEqual(len(session.calls), 1)
 
     def test_parse_error_reports_line_and_preserves_output(self):
@@ -413,7 +413,7 @@ class PdfDownloadTests(unittest.TestCase):
             backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1/a', 30)
             self.assertEqual([url for url, _, _ in session.calls],
                              [discovery_url({'title': 'No DOI'}), discovery_url({'title': 'No DOI'})])
-            entries = bibtexparser.loads(output.read_text()).entries
+            entries = parse_bibtex(output.read_text()).entries
             self.assertEqual([e['source'] for e in entries], ['acm', 'acm'])
             self.assertIn('file', entries[0])
             self.assertNotIn('file', entries[1])
@@ -444,7 +444,7 @@ class PdfDownloadTests(unittest.TestCase):
                                                 browser_download=backend), (1, 0, 0))
             self.assertEqual(session.calls, [])
             backend.assert_called_once_with(endpoint, 30)
-            self.assertTrue(Path(bibtexparser.loads(output.read_text()).entries[0]['file']).exists())
+            self.assertTrue(Path(parse_bibtex(output.read_text()).entries[0]['file']).exists())
 
     def test_acm_browser_jobs_share_per_host_rate_limit(self):
         with tempfile.TemporaryDirectory() as folder:

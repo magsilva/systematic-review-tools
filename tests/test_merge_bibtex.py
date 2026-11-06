@@ -5,9 +5,9 @@ import sys
 import tempfile
 import unittest
 
-import bibtexparser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from bibtex_io import parse_bibtex, new_database, serialize_bibtex
 from merge_bibtex import main, merge_entries, merge_files
 
 
@@ -39,7 +39,7 @@ class MergeBibtexTests(unittest.TestCase):
             source.write_text(r'@article{a, title={A study}, abstract={Java \{ host}}' '\n'
                               r'@article{b, title={Another study}, abstract={name\} suffix}}')
             self.assertEqual(merge_files([source], output), (2, 2))
-            entries = bibtexparser.loads(output.read_text()).entries
+            entries = parse_bibtex(output.read_text()).entries
             self.assertEqual(entries[0]['abstract'], r'Java \textbraceleft{} host')
             self.assertEqual(entries[1]['abstract'], r'name\textbraceright{} suffix')
 
@@ -95,7 +95,7 @@ class MergeBibtexTests(unittest.TestCase):
             first.write_text('@string{pub="ACM"}\n@article{a, title={Café}, doi={10.1/a}, publisher=pub, source={ACM}}', encoding='utf-8')
             second.write_text('@article{b, title={Café}, doi={10.1/a}, abstract={A study}, source={Scopus}}', encoding='utf-8')
             self.assertEqual(merge_files([first, second], output), (2, 1))
-            database = bibtexparser.loads(output.read_text(encoding='utf-8'))
+            database = parse_bibtex(output.read_text(encoding='utf-8'))
             self.assertEqual(database.entries[0]['publisher'], 'ACM')
             self.assertEqual(database.entries[0]['abstract'], 'A study')
             self.assertEqual(database.entries[0]['source'], 'ACM; Scopus')

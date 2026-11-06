@@ -1,10 +1,7 @@
 #!/usr/bin/python3
 
 import csv
-import bibtexparser
-from bibtexparser.bparser import BibTexParser
-from bibtexparser.bibdatabase import BibDatabase
-from bibtexparser.customization import *
+from bibtex_io import read_bibtex, new_database, write_bibtex
 
 import os.path
 import sys
@@ -38,14 +35,8 @@ class BibtexFilter(object):
         self.output_csv_file = csv_filename
 
     def run(self):
-        parser = BibTexParser(common_strings = True, ignore_nonstandard_types = False, homogenize_fields = False, customization = add_plaintext_fields, add_missing_from_crossref = True)
-        with open(self.input_bibtex_file) as bibtex_input_file:
-            try:
-                raw_database = parser.parse_file(bibtex_input_file)
-            except UnicodeDecodeError:
-                with open(self.input_bibtex_file, encoding = "latin-1") as bibtex_input_file_fallback:
-                    raw_database = parser.parse_file(bibtex_input_file_fallback) 
-        final_database = BibDatabase()
+        raw_database = read_bibtex(self.input_bibtex_file, plaintext=True,
+                                   inherit_crossref=True, fallback_encoding='latin-1')
 
         with open(self.output_csv_file, 'w', newline='') as csvfile:
             csvwriter = csv.writer(csvfile, delimiter=',',quotechar='"', quoting=csv.QUOTE_MINIMAL)

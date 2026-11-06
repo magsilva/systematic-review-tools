@@ -3,15 +3,13 @@
 
 import argparse
 import logging
-import os
 from pathlib import Path
 import re
 import sys
-import tempfile
 import unicodedata
 from urllib.parse import unquote
 
-from bibtex_io import merge_sources, parse_bibtex
+from bibtex_io import balance_literal_braces, merge_sources, new_database, read_bibtex, write_bibtex
 
 
 def normalize_doi(value):
@@ -25,21 +23,6 @@ def normalize_title(value):
     """Ignore case, protective braces, and whitespace, retaining punctuation."""
     value = unicodedata.normalize('NFKC', value).casefold()
     return ' '.join(value.replace('{', '').replace('}', '').split())
-
-
-def balance_literal_braces(content):
-    """Use balanced TeX commands for escaped literal braces in field values.
-
-    BibTeX parsers count braces even in \\{ and \\}; an unmatched literal
-    brace can otherwise cause an entire record to be silently skipped.
-    """
-    def replace(match):
-        slashes, brace = match.groups()
-        if len(slashes) % 2 == 0:
-            return match.group()
-        command = 'textbraceleft' if brace == '{' else 'textbraceright'
-        return slashes[:-1] + '\\' + command + '{}'
-    return re.sub(r'(\\+)([{}])', replace, content)
 
 
 def identity_keys(entry):
@@ -166,36 +149,16 @@ def merge_entries(sources, logger=None):
 
 def merge_files(inputs, output, logger=None):
     """Parse all inputs before atomically replacing the output; return counts."""
-    import bibtexparser
-    from bibtexparser.bibdatabase import BibDatabase
-    from bibtexparser.bwriter import BibTexWriter
-
     output = Path(output)
     if any(Path(path).resolve() == output.resolve() for path in inputs):
         raise ValueError('Output must differ from all input files.')
     sources, preambles = [], []
     for path in inputs:
-        content = balance_literal_braces(Path(path).read_text(encoding='utf-8-sig'))
-        database = parse_bibtex(content, path)
+        database = read_bibtex(path)
         sources.append(database.entries)
         preambles.extend(p for p in database.preambles if p not in preambles)
-    database = BibDatabase()
-    database.entries = merge_entries(sources, logger)
-    database.preambles = preambles
-    writer = BibTexWriter()
-    writer.contents = ['preambles', 'entries']
-    writer.order_entries_by = None
-    content = bibtexparser.dumps(database, writer=writer)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         dir=output.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(content)
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+    database = new_database(merge_entries(sources, logger), preambles)
+    write_bibtex(database, output)
     return sum(map(len, sources)), len(database.entries)
 
 

@@ -5,9 +5,9 @@ import sys
 import tempfile
 import unittest
 
-import bibtexparser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from bibtex_io import parse_bibtex, new_database, serialize_bibtex
 from filter_bibtex import Criterion, EntryTypeCriterion, filter_entries, filter_file, main
 
 
@@ -53,7 +53,7 @@ class FilterBibtexTests(unittest.TestCase):
                                '--include-type', 'Article', '--include-type', 'inproceedings',
                                '--exclude-type', 'book'])
             self.assertEqual(status, 0)
-            entries = bibtexparser.loads(output.read_text()).entries
+            entries = parse_bibtex(output.read_text()).entries
             self.assertEqual([e['ID'] for e in entries], ['a', 'c'])
             self.assertEqual(entries[0]['title'], 'Café')
             self.assertEqual(entries[0]['publisher'], 'ACM')
@@ -81,7 +81,7 @@ class FilterBibtexTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'different file'):
                 filter_file(source, source, [])
             self.assertEqual(filter_file(source, output, [EntryTypeCriterion(['article'])]), (1, 0))
-            self.assertEqual(bibtexparser.loads(output.read_text()).entries, [])
+            self.assertEqual(parse_bibtex(output.read_text()).entries, [])
 
 
 if __name__ == '__main__':

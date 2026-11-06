@@ -1,1 +1,2 @@
+-r requirements-bibtex.txt
 pybliometrics>=4,<5

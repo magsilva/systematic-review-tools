@@ -1,4 +1,4 @@
-bibtexparser>=1.4,<2
+-r requirements-bibtex.txt
 requests>=2.31,<3
 tqdm>=4.66,<5
 pypdf>=5,<8

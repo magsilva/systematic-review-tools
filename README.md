@@ -1,5 +1,20 @@
 # Systematic review tools
 
+All BibTeX tools use `bibtexparser==2.1.0` (python-bibtexparser) and require
+Python 3.10 or newer. Install the shared dependency with:
+
+```sh
+.venv/bin/python -m pip install -r requirements-bibtex.txt
+```
+
+The ACM, Scopus, and PDF-download requirements include this shared pin.
+`src/bibtex_io.py` centralizes v2 parsing, serialization, and atomic UTF-8
+file writes for search exports, merging, filtering, downloading, and the legacy
+CSV/mapping tools. Application records remain dictionaries; the shared module
+converts them to and from v2 `Library`, `Entry`, and `Field` objects. Invalid
+blocks are rejected with the input filename and a one-based line number.
+
+
 ## Filter BibTeX entries by criteria
 
 Install `requirements-bibtex.txt` if needed, then include only selected types:

@@ -8,11 +8,11 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-import bibtexparser
 from pypdf import PdfWriter
 from pypdf.generic import (DecodedStreamObject, DictionaryObject, NameObject)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from bibtex_io import parse_bibtex, new_database, serialize_bibtex
 from browser_pdf import PdfBytes
 from download_pdfs import DownloadJob, HostRateLimiter, download_bibtex, download_queue
 from paper_discovery import (PdfVerificationError, discovery_url, normalize, rank_candidates, verify_pdf)
@@ -95,10 +95,10 @@ class PaperDiscoveryTests(unittest.TestCase):
     def test_lookup_download_verification_and_bibtex_update(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output, directory = (Path(folder)/p for p in ('in.bib', 'out.bib', 'pdfs'))
-            source.write_text(bibtexparser.dumps(bibtexparser.bibdatabase.BibDatabase()))
-            database = bibtexparser.bibdatabase.BibDatabase()
+            source.write_text(serialize_bibtex(new_database()))
+            database = new_database()
             database.entries = [entry()]
-            source.write_text(bibtexparser.dumps(database))
+            source.write_text(serialize_bibtex(database))
             original = source.read_bytes()
             lookup, url = discovery_url(entry()), 'https://pub.test/paper.pdf'
             session = Session({lookup: Response(json.dumps(payload(metadata())).encode()),
@@ -107,7 +107,7 @@ class PaperDiscoveryTests(unittest.TestCase):
                 counts = download_bibtex(source, output, directory, self.logger,
                                          browser_download=Mock(), browser_fallback=Mock())
             self.assertEqual(counts, (1, 0, 0))
-            result = bibtexparser.loads(output.read_text()).entries[0]
+            result = parse_bibtex(output.read_text()).entries[0]
             self.assertEqual((result['doi'], result['url']), ('10.1234/paper', url))
             self.assertEqual(Path(result['file']).read_bytes(), MATCHING_PDF())
             self.assertEqual(source.read_bytes(), original)

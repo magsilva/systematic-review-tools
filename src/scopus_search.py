@@ -3,11 +3,11 @@
 
 import argparse
 import logging
-import os
 from pathlib import Path
 import re
 import sys
-import tempfile
+
+from bibtex_io import new_database, serialize_bibtex, write_bibtex
 
 
 def escape_bibtex(value):
@@ -20,7 +20,7 @@ def escape_bibtex(value):
     return ''.join(replacements.get(char, char) for char in str(value))
 
 
-def record_to_bibtex(record, index):
+def record_to_entry(record, index):
     """Convert a ScopusSearch Document without additional per-paper API calls."""
     def value(name):
         return getattr(record, name, None)
@@ -58,8 +58,12 @@ def record_to_bibtex(record, index):
             fields['year'] = year.group()
     if value('pageRange'):
         fields['pages'] = escape_bibtex(re.sub(r'(?<=\d)-(?=\d)', '--', value('pageRange')))
-    body = ',\n'.join('  %s = {%s}' % item for item in fields.items())
-    return '@%s{%s,\n%s\n}\n' % (entry_type, key, body)
+    return dict(fields, ENTRYTYPE=entry_type, ID=key)
+
+
+def record_to_bibtex(record, index):
+    """Serialize a Scopus record using python-bibtexparser."""
+    return serialize_bibtex(new_database([record_to_entry(record, index)]))
 
 
 def search_to_bibtex(query, output, *, refresh=False, subscriber=True, config_path=None):
@@ -73,18 +77,9 @@ def search_to_bibtex(query, output, *, refresh=False, subscriber=True, config_pa
     search = ScopusSearch(query, refresh=refresh, subscriber=subscriber,
                           download=True, verbose=False)
     records = search.results or []
-    output = Path(output)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         dir=output.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            for index, record in enumerate(records, start=1):
-                stream.write(record_to_bibtex(record, index) + '\n')
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+    database = new_database(record_to_entry(record, index)
+                            for index, record in enumerate(records, start=1))
+    write_bibtex(database, output)
     return len(records)
 
 

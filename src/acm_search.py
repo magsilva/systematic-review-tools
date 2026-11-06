@@ -3,14 +3,12 @@
 
 import argparse
 import logging
-import os
 from pathlib import Path
 import sys
-import tempfile
 from urllib.parse import urlencode
 import webbrowser
 
-from bibtex_io import merge_sources, parse_bibtex
+from bibtex_io import merge_sources, read_bibtex, write_bibtex
 
 
 def build_search_url(query):
@@ -22,28 +20,11 @@ def build_search_url(query):
 
 def import_bibtex(source, output):
     """Validate a user export, tag every entry with ACM, and atomically save it."""
-    import bibtexparser
-    from bibtexparser.bwriter import BibTexWriter
-
     source, output = Path(source), Path(output)
-    content = source.read_text(encoding='utf-8-sig')
-    database = parse_bibtex(content, source, require_titles=True)
+    database = read_bibtex(source, require_titles=True)
     for entry in database.entries:
         entry['source'] = merge_sources(entry.get('source', ''), 'ACM')
-    writer = BibTexWriter()
-    writer.contents = ['preambles', 'entries']
-    writer.order_entries_by = None
-    content = bibtexparser.dumps(database, writer=writer)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
-                                         dir=output.parent, delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(content)
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+    write_bibtex(database, output)
     return len(database.entries)
 
 
