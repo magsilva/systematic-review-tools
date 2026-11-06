@@ -4,6 +4,7 @@
 import argparse
 import logging
 from pathlib import Path
+import re
 import sys
 import unicodedata
 
@@ -14,31 +15,46 @@ from merge_bibtex import normalize_doi
 
 def normalize_text(value):
     """Compare decoded TeX text without differences in case or whitespace."""
+    value = re.sub(r'(\\*)%',
+                   lambda match: match[1] + ('\\' if len(match[1]) % 2 == 0 else '') + '%', value)
     value = LatexNodes2Text().latex_to_text(value)
     return ' '.join(unicodedata.normalize('NFKC', value).casefold().split())
 
 
 def publication_identity(entry):
-    return (normalize_doi(entry.get('doi', '')),
-            normalize_text(entry.get('title', '')),
-            normalize_text(entry.get('author', '')),
-            normalize_text(entry.get('abstract', '')))
+    doi = normalize_doi(entry.get('doi', ''))
+    if not doi and re.match(r'https?://(?:dx\.)?doi\.org/', entry.get('url', '').strip(), re.I):
+        doi = normalize_doi(entry['url'])
+    title = normalize_text(entry.get('title', ''))
+    author = normalize_text(entry.get('author', ''))
+    editor = normalize_text(entry.get('editor', ''))
+    creators = ('author', author) if author else (('editor', editor) if editor else None)
+    # Ignore identifiers and local provenance when checking otherwise identical
+    # metadata. Require more evidence than a title alone for anonymous records.
+    metadata = tuple(sorted((key, normalize_text(value)) for key, value in entry.items()
+                            if key not in ('ID', 'doi', 'source', 'file') and value.strip()))
+    signature = metadata if title and any(key in entry and entry[key].strip()
+                                        for key in ('year', 'isbn', 'issn', 'publisher',
+                                                    'url', 'abstract')) else None
+    return doi, title, creators, normalize_text(entry.get('abstract', '')), signature
 
 
 def _equal(left, right):
-    doi_a, title_a, authors_a, abstract_a = left
-    doi_b, title_b, authors_b, abstract_b = right
+    doi_a, title_a, authors_a, abstract_a, metadata_a = left
+    doi_b, title_b, authors_b, abstract_b, metadata_b = right
     if doi_a and doi_b:
         return doi_a == doi_b
-    return bool(title_a and authors_a and title_a == title_b and authors_a == authors_b
-                and (not abstract_a or not abstract_b or abstract_a == abstract_b))
+    return bool((metadata_a and metadata_a == metadata_b)
+                or (title_a and authors_a and title_a == title_b and authors_a == authors_b
+                    and (not abstract_a or not abstract_b or abstract_a == abstract_b)))
 
 
 def same_publication(left, right):
-    """Use DOI when both have it; otherwise require title/authors and available abstracts.
+    """Use DOI first, then title/creators or identical bibliographic metadata.
 
     Author order is significant. An absent abstract does not prevent a match;
-    two present, different abstracts do. Missing title or author prevents fallback.
+    two present, different abstracts do. Editors stand in for missing authors,
+    but an author list is not compared against an editor list.
     """
     return _equal(publication_identity(left), publication_identity(right))
 
@@ -63,8 +79,10 @@ def set_entries(sources, operation, logger=None):
     for source, entries in enumerate(sources):
         for entry in entries:
             identity = publication_identity(entry)
-            doi, title, authors, _ = identity
+            doi, title, authors, _, signature = identity
             keys = ([('doi', doi)] if doi else []) + ([('metadata', title, authors)] if title and authors else [])
+            if signature:
+                keys.append(('identical_metadata', signature))
             candidates = sorted({n for key in keys for n in index.get(key, ())})
             number = next((n for n in candidates
                            if all(_equal(identity, previous) for previous in groups[n]['identities'])), None)

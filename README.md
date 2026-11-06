@@ -81,8 +81,13 @@ file count once for membership.
 
 Two populated DOI fields take priority: equal normalized DOIs match, and distinct
 DOIs never match. DOI prefixes, URL encoding, and letter case are normalized.
-If either record lacks a DOI, matching requires nonempty, equal titles and author
-fields. When both abstracts are present, they must also match. Text comparison
+When a DOI field is absent, DOI resolver URLs are also recognized. If either
+record lacks a DOI, matching uses equal titles and author fields, or editor
+fields when authors are absent. Author lists are not compared against editor
+lists. When both abstracts are present, they must also match. Anonymous records
+can also match when all bibliographic metadata is identical (excluding citation
+keys, DOI, source, and local file fields), provided a title and at least one of
+year, ISBN, ISSN, publisher, URL, or abstract are present. Title alone is insufficient. Text comparison
 decodes TeX, normalizes Unicode, and ignores case and whitespace differences.
 Author order and name formatting remain significant; citation keys alone never
 identify publications. This is conservative matching, without fuzzy similarity.
