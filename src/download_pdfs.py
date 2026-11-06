@@ -29,7 +29,16 @@ def clean_url(value):
     return value
 
 
+def infer_source(entry):
+    """Infer ACM provenance from the publisher only when source is absent."""
+    if 'source' not in entry:
+        publisher = ' '.join(entry.get('publisher', '').replace('{', '').replace('}', '').split())
+        if publisher.casefold() in ('acm', 'association for computing machinery'):
+            entry['source'] = 'acm'
+
+
 def is_acm_entry(entry):
+    infer_source(entry)
     return any(source.strip().casefold() == 'acm'
                for source in entry.get('source', '').split(';'))
 
@@ -279,6 +288,7 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
     seen, jobs = set(), []
     resumed = 0
     for entry in database.entries:
+        infer_source(entry)
         if entry['ID'] in seen:
             raise ValueError('Duplicate citation key: ' + entry['ID'])
         seen.add(entry['ID'])

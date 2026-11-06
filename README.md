@@ -13,6 +13,11 @@ the downloader uses a visible browser to retrieve only
 `https://dl.acm.org/doi/pdf/<DOI>`. Other URL fields are
 ignored, and redirects or HTML discovery are not followed. ACM entries without
 a DOI fail without making a request. This also applies to `source = {ACM; Scopus}`.
+When `source` is absent and the publisher is `ACM` or
+`Association for Computing Machinery` (case-insensitive), the downloader adds
+`source = {acm}` to the output and applies these same rules. Existing source
+fields, including empty fields, are not overwritten. Inference also applies to
+reused PDFs and entries that fail to download.
 ACM entries never fall back to the HTTP client. Install browser support first:
 
 ```sh

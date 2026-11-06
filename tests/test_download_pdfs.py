@@ -184,6 +184,40 @@ class PdfDownloadTests(unittest.TestCase):
         self.assertEqual(candidate_urls({'source': 'ACM', 'doi': 'https://doi.org/10.1/a'}),
                          ['https://dl.acm.org/doi/pdf/10.1/a'])
 
+    def test_missing_source_is_inferred_from_acm_publisher(self):
+        for publisher in ('ACM', 'Association for Computing Machinery',
+                          ' association FOR computing machinery ', '{ACM}'):
+            with self.subTest(publisher=publisher):
+                entry = {'publisher': publisher, 'doi': '10.1/a', 'url': 'https://other.test/a'}
+                self.assertEqual(candidate_urls(entry), ['https://dl.acm.org/doi/pdf/10.1/a'])
+                self.assertEqual(entry['source'], 'acm')
+        for source in ('Scopus', ''):
+            entry = {'source': source, 'publisher': 'ACM', 'url': 'https://other.test/a'}
+            self.assertEqual(candidate_urls(entry), ['https://other.test/a'])
+            self.assertEqual(entry['source'], source)
+        entry = {'publisher': 'Other publisher', 'url': 'https://other.test/a'}
+        self.assertEqual(candidate_urls(entry), ['https://other.test/a'])
+        self.assertNotIn('source', entry)
+
+    def test_inferred_source_is_saved_for_downloads_and_missing_dois(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, directory = (Path(folder) / p for p in ('in.bib', 'out.bib', 'pdfs'))
+            source.write_text('@article{a, title={Test}, publisher={ACM}, doi={10.1/a}}\n'
+                              '@article{b, title={No DOI}, publisher={Association for Computing Machinery}}')
+            session = Session({})
+            backend = Mock(return_value=PDF)
+            with patch('requests.Session', return_value=session):
+                self.assertEqual(download_bibtex(source, output, directory, self.logger,
+                                                browser_download=backend), (1, 0, 1))
+                self.assertEqual(download_bibtex(output, output, directory, self.logger,
+                                                browser_download=backend), (0, 1, 1))
+            backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1/a', 30, 100*1024*1024)
+            self.assertEqual(session.calls, [])
+            entries = bibtexparser.loads(output.read_text()).entries
+            self.assertEqual([e['source'] for e in entries], ['acm', 'acm'])
+            self.assertIn('file', entries[0])
+            self.assertNotIn('file', entries[1])
+
     def test_acm_never_uses_http_or_html_fallback(self):
         endpoint = 'https://dl.acm.org/doi/pdf/10.1/a'
         for backend in (Mock(side_effect=ValueError('HTTP 403')),
