@@ -149,7 +149,7 @@ def is_pdf(path):
         return False
 
 
-def save_pdf(destination, first, chunks, max_bytes):
+def save_pdf(destination, first, chunks, max_bytes, progress=None):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
@@ -158,11 +158,15 @@ def save_pdf(destination, first, chunks, max_bytes):
             if size > max_bytes:
                 raise ValueError('PDF exceeds the configured size limit.')
             stream.write(first)
+            if progress is not None:
+                progress.advance(len(first))
             for chunk in chunks:
                 size += len(chunk)
                 if size > max_bytes:
                     raise ValueError('PDF exceeds the configured size limit.')
                 stream.write(chunk)
+                if progress is not None:
+                    progress.advance(len(chunk))
         if not is_pdf(temporary):
             raise ValueError('Response is not a complete PDF (missing signature or EOF).')
         os.replace(temporary, destination)
@@ -184,7 +188,7 @@ def retry_after(value):
 
 def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*1024*1024,
                    max_retries=2, sleep=time.sleep, browser_download=None,
-                   browser_fallback=None):
+                   browser_fallback=None, progress=None):
     """Process one HTTP request per queue turn; redirects share the same limiter."""
     pending = list(jobs)
     downloaded, failed = 0, 0
@@ -202,6 +206,8 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
             logger.error('No PDF downloaded for %s: no usable PDF link or request limit reached',
                          job.entry['ID'])
             failed += 1
+            if progress is not None:
+                progress.finished(False)
             continue
         raw_url = job.urls.popleft()
         url = clean_url(raw_url)
@@ -210,6 +216,8 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
             continue
         delay = limiter.retry_delay(url) if job.immediate_retry else limiter.delay(url)
         if delay:
+            if progress is not None:
+                progress.start(job.entry, url, 'Rate limit: waiting %.0fs' % delay)
             job.urls.appendleft(url)
             pending.append(job)
             sleep(min(delay, 60))
@@ -220,15 +228,21 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         limiter.started(url)
         success = False
         using_browser = is_acm_entry(job.entry) or url in job.browser_urls
+        if progress is not None:
+            progress.start(job.entry, url, 'Browser (waiting for file)' if using_browser else 'HTTP')
         try:
             if using_browser:
                 transport = browser_download if is_acm_entry(job.entry) else browser_fallback
                 if transport is None:
                     raise RuntimeError('Browser download transport is not available.')
                 data = transport(url, timeout, max_bytes)
-                save_pdf(job.destination, data, iter(()), max_bytes)
+                if progress is not None:
+                    progress.total_bytes(len(data))
+                save_pdf(job.destination, data, iter(()), max_bytes, progress)
                 job.entry['file'] = str(job.destination.resolve())
                 downloaded += 1
+                if progress is not None:
+                    progress.finished(True)
                 logger.info('Saved through browser: %s', job.destination)
                 continue
             with session.get(url, stream=True, allow_redirects=False, timeout=timeout) as response:
@@ -258,16 +272,22 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                 else:
                     chunks = response.iter_content(chunk_size=8192)
                     first = next(chunks, b'')
+                    if progress is not None:
+                        progress.total_bytes(response.headers.get('Content-Length'))
                     if b'%PDF-' in first[:1024]:
-                        save_pdf(job.destination, first, chunks, max_bytes)
+                        save_pdf(job.destination, first, chunks, max_bytes, progress)
                         success = True
                     else:
                         if is_acm_entry(job.entry):
                             raise ValueError('ACM PDF endpoint returned a non-PDF response; '
                                              'no alternative URLs allowed.')
                         body = bytearray(first)
+                        if progress is not None:
+                            progress.advance(len(first))
                         for chunk in chunks:
                             body.extend(chunk)
+                            if progress is not None:
+                                progress.advance(len(chunk))
                             if len(body) > 2*1024*1024:
                                 raise ValueError('Non-PDF page exceeds 2 MiB discovery limit.')
                         links = PdfLinks()
@@ -277,6 +297,8 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                         if not links.links:
                             raise ValueError('Response is not a PDF and advertises no PDF link.')
         except Exception as error:
+            if progress is not None:
+                progress.status('Attempt failed; trying next option')
             logger.error('Download failed for %s at %s: %s', job.entry['ID'], url, error)
             job.immediate_retry = True
             if not using_browser and browser_fallback is not None and url not in job.browser_urls:
@@ -287,6 +309,8 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         if success:
             job.entry['file'] = str(job.destination.resolve())
             downloaded += 1
+            if progress is not None:
+                progress.finished(True)
             logger.info('Saved %s', job.destination)
         else:
             if job.immediate_retry:
@@ -318,7 +342,7 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     max_bytes=100*1024*1024, max_retries=2,
                     browser_profile=Path('.pdf-browser'), browser_download=None,
                     sources=None, exclude_sources=None, browser_fallback=None,
-                    browser_headless=True):
+                    browser_headless=True, show_progress=False):
     import requests
     source, output, directory = Path(source), Path(output), Path(directory)
     database = parse_bibtex(source.read_text(encoding='utf-8-sig'), source)
@@ -355,21 +379,28 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
         jobs.append(DownloadJob(entry, destination, deque(urls)))
     try:
         with ExitStack() as stack:
+            progress = None
+            if show_progress:
+                from download_progress import DownloadProgress
+                progress = stack.enter_context(DownloadProgress(len(jobs), resumed, skipped))
             if browser_download is None or browser_fallback is None:
                 from browser_pdf import BrowserPdfDownloader
                 browser = stack.enter_context(BrowserPdfDownloader(
                     browser_profile, headless=browser_headless))
                 if browser_download is None:
-                    browser_download = browser.download
+                    browser_download = lambda url, timeout, max_bytes: browser.download(
+                        url, timeout, max_bytes, progress=progress)
                 if browser_fallback is None:
                     browser_fallback = lambda url, timeout, max_bytes: browser.download(
-                        url, timeout, max_bytes, strict=False, limiter=limiter)
+                        url, timeout, max_bytes, strict=False, limiter=limiter,
+                        progress=progress)
             session = stack.enter_context(requests.Session())
             session.headers.update({'User-Agent': 'systematic-review-tools/pdf-downloader',
                                     'Accept': 'application/pdf,text/html;q=0.9,*/*;q=0.5'})
             downloaded, failed = download_queue(jobs, session, limiter, logger,
                 timeout=timeout, max_bytes=max_bytes, max_retries=max_retries,
-                browser_download=browser_download, browser_fallback=browser_fallback)
+                browser_download=browser_download, browser_fallback=browser_fallback,
+                progress=progress)
     finally:
         # Preserve completed file annotations even on Ctrl-C or an unexpected failure.
         write_bibtex(database, output)
@@ -413,12 +444,17 @@ def main(argv=None):
                         help='Isolated persistent browser profile for ACM downloads.')
     parser.add_argument('--show-browser', action='store_true',
                         help='Show Chromium instead of using the default headless browser.')
+    parser.add_argument('--no-progress', action='store_true', help='Disable tqdm progress displays.')
     args = parser.parse_args(argv)
     if args.max_retries < 0:
         parser.error('--max-retries must not be negative.')
     logger = logging.Logger('download_pdfs')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    stderr = logging.StreamHandler(sys.stderr)
+    if args.no_progress:
+        stderr = logging.StreamHandler(sys.stderr)
+    else:
+        from download_progress import ProgressLoggingHandler
+        stderr = ProgressLoggingHandler()
     stderr.setFormatter(formatter)
     logger.addHandler(stderr)
     if args.log_file.resolve() in (args.input.resolve(), args.output.resolve()):
@@ -437,7 +473,7 @@ def main(argv=None):
             timeout=args.timeout, max_bytes=int(args.max_size_mb*1024*1024),
             max_retries=args.max_retries, browser_profile=args.browser_profile,
             sources=args.sources, exclude_sources=args.exclude_sources,
-            browser_headless=not args.show_browser)
+            browser_headless=not args.show_browser, show_progress=not args.no_progress)
         print('Downloaded %d; already saved %d; failed %d. BibTeX: %s' %
               (downloaded, resumed, failed, args.output))
         return 1 if failed else 0

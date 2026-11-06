@@ -2,6 +2,16 @@
 
 ## Download PDFs from a BibTeX file
 
+The CLI displays tqdm progress bars by default: an entry counter with downloaded,
+failed, already-saved, and excluded counts, plus the current title, DOI, URL, and
+a byte transfer bar. Retries do not count as failed entries until all options
+are exhausted. HTTP transfers show byte progress and percentages when the server
+provides a content length. Browser transfers show an indeterminate waiting bar
+until the browser returns the file, then its final byte count; browser APIs do
+not expose streaming byte progress here. Long metadata is shortened to fit the
+terminal. Progress goes to stderr, with log messages printed through tqdm to
+avoid disrupting the bars. Use `--no-progress` for plain logging.
+
 ```sh
 .venv/bin/python -m pip install -r requirements-pdf-download.txt
 .venv/bin/python src/download_pdfs.py neurodivergent-sw-eng.bib \

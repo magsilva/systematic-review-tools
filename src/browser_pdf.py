@@ -33,7 +33,7 @@ class BrowserPdfDownloader:
                     if args[0] is None:
                         raise
 
-    def download(self, url, timeout, max_bytes, *, strict=True, limiter=None):
+    def download(self, url, timeout, max_bytes, *, strict=True, limiter=None, progress=None):
         if self.runtime is None:
             try:
                 from playwright.sync_api import sync_playwright
@@ -70,6 +70,8 @@ class BrowserPdfDownloader:
                         time.sleep(min(delay(target), 60))
                     limiter.started(target)
                 visited.add(target)
+                if progress is not None:
+                    progress.browser_url(progress.entry, target)
                 downloads.clear()
                 try:
                     response = None
