@@ -24,7 +24,7 @@ class AcmSearchTests(unittest.TestCase):
     def test_console_prepares_without_claiming_import(self):
         with tempfile.TemporaryDirectory() as folder, \
                 patch('acm_search.sys.stdin.isatty', return_value=False), \
-                patch('acm_search.webbrowser.open', return_value=True) as browser, \
+                patch('acm_search.open_search_browser', ) as browser, \
                 contextlib.redirect_stdout(io.StringIO()) as stdout:
             output = Path(folder) / 'papers.bib'
             status = application.main([
@@ -71,7 +71,7 @@ class AcmSearchTests(unittest.TestCase):
                 log = Path(folder) / 'errors.log'
                 with contextlib.redirect_stderr(io.StringIO()) as stderr, \
                         contextlib.redirect_stdout(io.StringIO()), \
-                        patch('acm_search.webbrowser.open') as browser:
+                        patch('acm_search.open_search_browser') as browser:
                     status = acm_search.main([
                         '--query', '("autism")', '--output', str(output),
                         '--import-bibtex', str(source), '--log-file', str(log)])
@@ -83,7 +83,7 @@ class AcmSearchTests(unittest.TestCase):
 
     def test_later_import_through_application(self):
         with tempfile.TemporaryDirectory() as folder, \
-                patch('acm_search.webbrowser.open') as browser, \
+                patch('acm_search.open_search_browser') as browser, \
                 contextlib.redirect_stdout(io.StringIO()) as stdout:
             source = Path(folder) / 'export.bib'
             source.write_text('@inproceedings{a, title={Test}}')

@@ -517,7 +517,7 @@ def main(argv=None):
     parser.add_argument('--browser-profile', type=Path, default=Path('.pdf-browser'),
                         help='Isolated persistent browser profile for ACM downloads.')
     parser.add_argument('--show-browser', action='store_true',
-                        help='Show Chromium instead of using the default headless browser.')
+                        help='Show Camoufox instead of using the default headless browser.')
     parser.add_argument('--no-progress', action='store_true', help='Disable tqdm progress displays.')
     args = parser.parse_args(argv)
     if args.max_retries < 0:

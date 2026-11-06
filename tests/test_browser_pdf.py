@@ -33,12 +33,13 @@ class BrowserPdfTests(unittest.TestCase):
                 page.goto.return_value = response('https://pub.test/a.pdf', PDF, 'application/pdf')
                 context = Mock(new_page=Mock(return_value=page))
                 runtime = Mock()
-                runtime.chromium.launch_persistent_context.return_value = context
-                with patch('playwright.sync_api.sync_playwright') as start:
+                launcher = Mock(return_value=context)
+                with patch('playwright.sync_api.sync_playwright') as start, \
+                        patch('browser_pdf.launch_context', launcher):
                     start.return_value.start.return_value = runtime
                     with BrowserPdfDownloader('unused-test-profile', **options) as backend:
                         self.assertEqual(backend.download('https://pub.test/a.pdf', 30), PDF)
-                self.assertEqual(runtime.chromium.launch_persistent_context.call_args.kwargs['headless'],
+                self.assertEqual(launcher.call_args.kwargs['headless'],
                                  expected)
                 context.close.assert_called_once()
                 runtime.stop.assert_called_once()

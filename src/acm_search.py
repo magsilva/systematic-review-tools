@@ -6,7 +6,8 @@ import logging
 from pathlib import Path
 import sys
 from urllib.parse import urlencode
-import webbrowser
+from contextlib import ExitStack
+from browser_session import open_search_browser
 
 from bibtex_io import merge_sources, read_bibtex, write_bibtex
 
@@ -57,6 +58,7 @@ def main(argv=None):
         return 1
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+    browsers = ExitStack()
     try:
         if args.query_file and args.query_file.resolve() == args.output.resolve():
             raise ValueError('Output and query file must be different files.')
@@ -66,8 +68,8 @@ def main(argv=None):
         print('Canonical query:\n%s\n\nACM search URL:\n%s' % (expression, url))
         source = args.import_bibtex
         if source is None:
-            if not args.no_browser and not webbrowser.open(url, new=2):
-                logger.warning('Could not open a browser; open the printed URL manually.')
+            if not args.no_browser:
+                browsers.enter_context(open_search_browser(url))
             print('\nIn ACM, verify the query and result count, then use Export Citations.\n'
                   'Select All results (if available), choose BibTeX, and download the file.\n'
                   'For exports in batches, combine them into one BibTeX file first.\n'
@@ -90,6 +92,7 @@ def main(argv=None):
         logger.exception('ACM browser search/import failed')
         return 1
     finally:
+        browsers.close()
         file_handler.close()
 
 

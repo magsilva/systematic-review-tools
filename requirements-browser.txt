@@ -1,2 +1,3 @@
 -r requirements-pdf-download.txt
 playwright>=1.40,<2
+camoufox>=0.4,<1

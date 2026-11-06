@@ -53,7 +53,7 @@ Download controls include `--source`, `--exclude-source`, `--rate-limit` (defaul
 2 requests per minute per hostname), `--timeout`, `--max-retries`,
 `--browser-profile`, `--show-browser`, and `--no-progress`. The default PDF
 directory is `pdfs`. Install the search engine requirements and
-`requirements-browser.txt` and Chromium as described in the PDF-download section
+`requirements-browser.txt` and Camoufox as described in the PDF-download section
 when enabling PDF downloads.
 
 The final output contains retained entries and their downloaded `file` fields.
@@ -225,7 +225,7 @@ Install browser support first:
 
 ```sh
 .venv/bin/python -m pip install -r requirements-browser.txt
-.venv/bin/python -m playwright install chromium
+.venv/bin/python -m camoufox fetch
 ```
 
 ### Finding missing DOIs and download links
@@ -260,7 +260,7 @@ as a resume shortcut: title discovery and verification must still succeed.
 Already-identified entries continue to use their existing download behavior.
 Crossref may not index every paper or supply a usable full-text link or abstract.
 
-The console script uses a dedicated **headless Chromium** session by default,
+The console script uses a dedicated **headless Camoufox** session by default,
 so download attempts do not open browser windows. Add `--show-browser` to use
 a visible browser for troubleshooting or interactive login. It uses a profile
 at `.pdf-browser` (override with `--browser-profile`). It does not share the
@@ -282,7 +282,7 @@ immediately, including HTTP retries, alternative candidate URLs, and browser
 fallback. Server-provided `Retry-After` delays are still honored. Browser-managed subresources and automatic
 redirect hops are not individually paced. Failed fallbacks are logged and remaining
 candidate URLs are tried; there is no endless HTTP/browser retry loop.
-Install `requirements-browser.txt` and Playwright Chromium for this fallback too.
+Install `requirements-browser.txt` and Playwright with Camoufox for this fallback too.
 Access requiring a browser login, CAPTCHA, or unavailable
 subscription may still fail and is logged. This script does not guarantee that every
 paper has an accessible PDF.
@@ -589,3 +589,9 @@ Run the tests with:
 ```sh
 python3 -m unittest discover -s tests
 ```
+
+Web search and browser PDF retrieval use Camoufox through Playwright. Install
+`requirements-browser.txt`, then run `.venv/bin/python -m camoufox fetch`.
+Search sessions use a separate `.acm-search-camoufox` profile; browser caching
+is disabled. ACM search windows stay open while the interactive CLI waits for
+the citation export path. Use `--no-browser` to prepare a URL without launching.

@@ -1,5 +1,6 @@
 """Lazy browser transport for direct PDFs and publisher landing pages."""
 
+from browser_session import launch_context
 from pathlib import Path
 import time
 from urllib.parse import urljoin, urlsplit
@@ -47,10 +48,9 @@ class BrowserPdfDownloader:
                 from playwright.sync_api import sync_playwright
             except ImportError as error:
                 raise RuntimeError('PDF retrieval requires a browser. Install requirements-browser.txt '
-                                   'and run: python -m playwright install chromium') from error
+                                   'and run: python -m camoufox fetch') from error
             self.runtime = sync_playwright().start()
-            self.context = self.runtime.chromium.launch_persistent_context(
-                str(self.profile.resolve()), headless=self.headless, accept_downloads=True)
+            self.context = launch_context(self.runtime, self.profile, headless=self.headless)
         if self.context is None:
             raise RuntimeError('Download browser could not be started.')
         page = self.context.new_page()
