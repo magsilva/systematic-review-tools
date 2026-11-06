@@ -144,8 +144,10 @@ process, not across multiple concurrent runs. To change the rate:
 
 The script honors `Retry-After` on HTTP 429/503 and retries transient HTTP
 429/500/502/503/504 responses up to `--max-retries` times (default 2). Individual
-requests use `--timeout` seconds (default 30). PDF size is limited by
-`--max-size-mb` (default 100); landing pages are limited to 2 MiB, and each entry
+requests use `--timeout` seconds (default 30).
+There is no PDF size limit (`--max-size-mb` has been removed). HTTP PDFs are
+streamed to disk; browser transfers may be buffered in memory by the browser
+backend. Landing pages are limited to 2 MiB, and each entry
 has a maximum of 20 requests to bound redirects and discovery loops.
 
 Files have sanitized citation-key names with a hash suffix to avoid collisions.

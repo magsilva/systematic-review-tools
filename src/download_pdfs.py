@@ -154,21 +154,15 @@ def is_pdf(path):
         return False
 
 
-def save_pdf(destination, first, chunks, max_bytes, progress=None, verifier=None):
+def save_pdf(destination, first, chunks, progress=None, verifier=None):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
             temporary = Path(stream.name)
-            size = len(first)
-            if size > max_bytes:
-                raise ValueError('PDF exceeds the configured size limit.')
             stream.write(first)
             if progress is not None:
                 progress.advance(len(first))
             for chunk in chunks:
-                size += len(chunk)
-                if size > max_bytes:
-                    raise ValueError('PDF exceeds the configured size limit.')
                 stream.write(chunk)
                 if progress is not None:
                     progress.advance(len(chunk))
@@ -195,42 +189,182 @@ def retry_after(value):
     return max(0, seconds) if math.isfinite(seconds) else 60
 
 
-def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*1024*1024,
+@dataclass
+class AttemptResult:
+    downloaded_url: str = None
+    retry: bool = False
+
+
+def candidate_verifier(job):
+    if job.active_candidate is None:
+        return None
+    return lambda path: verify_pdf(path, job.entry, job.active_candidate)
+
+
+def download_with_browser(job, url, transport, timeout, progress=None):
+    """Retrieve a PDF through the selected browser transport and validate it."""
+    if transport is None:
+        raise RuntimeError('Browser download transport is not available.')
+    data = transport(url, timeout)
+    if progress is not None:
+        progress.total_bytes(len(data))
+    save_pdf(job.destination, data, iter(()), progress, candidate_verifier(job))
+    return AttemptResult(downloaded_url=getattr(data, 'url', url))
+
+
+def read_discovery_body(chunks, first=b'', progress=None):
+    """Bound metadata/HTML discovery responses, independently of PDF downloads."""
+    body = bytearray(first)
+    if progress is not None:
+        progress.advance(len(first))
+    for chunk in chunks:
+        body.extend(chunk)
+        if progress is not None:
+            progress.advance(len(chunk))
+        if len(body) > 2*1024*1024:
+            raise ValueError('Metadata or HTML response exceeds the 2 MiB discovery limit.')
+    return body
+
+
+def lookup_by_title(job, response, logger, progress=None):
+    """Convert a successful Crossref response into provisional paper candidates."""
+    if response.status_code != 200:
+        raise ValueError('Title lookup returned HTTP %s' % response.status_code)
+    body = read_discovery_body(response.iter_content(chunk_size=8192), progress=progress)
+    job.candidates.extend(rank_candidates(job.entry, json.loads(body)))
+    if not job.candidates:
+        logger.warning('No title match with sufficient author/abstract evidence for %s', job.entry['ID'])
+    return AttemptResult()
+
+
+def discover_pdf_links(job, url, response, first, chunks, progress=None):
+    """Extract PDF links from a publisher landing page."""
+    if is_acm_entry(job.entry):
+        raise ValueError('ACM PDF endpoint returned a non-PDF response; no alternative URLs allowed.')
+    body = read_discovery_body(chunks, first, progress)
+    links = PdfLinks()
+    links.feed(body.decode(response.encoding or 'utf-8', errors='replace'))
+    for link in reversed(links.links[:10]):
+        job.urls.appendleft(clean_url(urljoin(url, link)))
+    if not links.links:
+        raise ValueError('Response is not a PDF and advertises no PDF link.')
+    return AttemptResult()
+
+
+def schedule_http_retry(job, url, response, limiter, logger, max_retries):
+    if response.status_code in (429, 503) and response.headers.get('Retry-After'):
+        limiter.defer(url, retry_after(response.headers['Retry-After']))
+    if response.status_code not in (429, 500, 502, 503, 504):
+        return False
+    attempts = job.retries.get(url, 0)
+    if attempts >= max_retries:
+        return False
+    job.retries[url] = attempts + 1
+    job.visited.discard(url)
+    job.urls.appendleft(url)
+    job.immediate_retry = True
+    logger.warning('HTTP %s for %s; queued retry %d', response.status_code, job.entry['ID'], attempts + 1)
+    return True
+
+
+def follow_http_redirect(job, url, response):
+    if is_acm_entry(job.entry):
+        raise ValueError('ACM PDF endpoint redirected; no alternative URLs allowed.')
+    location = response.headers.get('Location')
+    if not location:
+        raise ValueError('Redirect has no Location header.')
+    job.urls.appendleft(clean_url(urljoin(url, location)))
+    return AttemptResult()
+
+
+def download_with_http(job, url, session, limiter, logger, timeout, max_retries, progress=None):
+    """Perform one HTTP turn: retry, title lookup, redirect, PDF, or landing page."""
+    with session.get(url, stream=True, allow_redirects=False, timeout=timeout) as response:
+        if schedule_http_retry(job, url, response, limiter, logger, max_retries):
+            return AttemptResult(retry=True)
+        response.raise_for_status()
+        if url == job.discovery_url:
+            return lookup_by_title(job, response, logger, progress)
+        if response.status_code in (301, 302, 303, 307, 308):
+            return follow_http_redirect(job, url, response)
+        if response.status_code != 200:
+            raise ValueError('Unexpected HTTP status %s' % response.status_code)
+        chunks = response.iter_content(chunk_size=8192)
+        first = next(chunks, b'')
+        if progress is not None:
+            progress.total_bytes(response.headers.get('Content-Length'))
+        if b'%PDF-' in first[:1024]:
+            save_pdf(job.destination, first, chunks, progress, candidate_verifier(job))
+            return AttemptResult(downloaded_url=getattr(response, 'url', url))
+        return discover_pdf_links(job, url, response, first, chunks, progress)
+
+
+def activate_next_candidate(job, logger):
+    while not job.urls and job.candidates:
+        job.active_candidate = job.candidates.popleft()
+        candidate = job.active_candidate
+        if is_acm_entry(job.entry):
+            urls = (['https://dl.acm.org/doi/pdf/' + quote(candidate['doi'], safe='/():;._-')]
+                    if candidate['doi'] else [])
+        else:
+            urls = candidate['urls']
+        job.urls.extend(urls)
+        logger.info('Trying title match for %s: %s (DOI %s)', job.entry['ID'],
+                    candidate['title'], candidate['doi'] or '(unavailable)')
+
+
+def handle_attempt_failure(job, url, error, using_browser, browser_fallback, logger, progress=None):
+    if progress is not None:
+        progress.status('Attempt failed; trying next option')
+    logger.error('Download failed for %s at %s: %s', job.entry['ID'], url, error)
+    job.immediate_retry = True
+    if isinstance(error, PdfVerificationError):
+        job.urls.clear()
+        logger.warning('Rejected unverified PDF for %s; trying the next title match', job.entry['ID'])
+    elif (url != job.discovery_url and not using_browser and browser_fallback is not None
+          and url not in job.browser_urls):
+        job.browser_urls.add(url)
+        job.visited.discard(url)
+        job.urls.appendleft(url)
+        logger.info('Queued browser fallback for %s at %s', job.entry['ID'], url)
+
+
+def record_download(job, url, logger, progress=None):
+    if job.active_candidate is not None:
+        if job.active_candidate['doi']:
+            job.entry['doi'] = job.active_candidate['doi']
+        job.entry['url'] = url
+    job.entry['file'] = str(job.destination.resolve())
+    if progress is not None:
+        progress.finished(True)
+    logger.info('Saved %s', job.destination)
+
+
+def download_queue(jobs, session, limiter, logger, *, timeout=30,
                    max_retries=2, sleep=time.sleep, browser_download=None,
                    browser_fallback=None, progress=None):
-    """Process one HTTP request per queue turn; redirects share the same limiter."""
+    """Schedule rate-limited attempts and dispatch HTTP/browser download strategies."""
     pending = list(jobs)
     downloaded, failed = 0, 0
+
     def delay_for(job):
         if not job.urls:
             return -1
         delay = (limiter.retry_delay(job.urls[0]) if job.immediate_retry
                  else limiter.delay(job.urls[0]))
         return -2 if job.immediate_retry and delay == 0 else delay
+
     while pending:
-        # Rotate jobs after each request so other servers can run during cooldowns.
         position = min(range(len(pending)), key=lambda n: delay_for(pending[n]))
         job = pending.pop(position)
-        while not job.urls and job.candidates:
-            job.active_candidate = job.candidates.popleft()
-            candidate = job.active_candidate
-            if is_acm_entry(job.entry):
-                urls = (['https://dl.acm.org/doi/pdf/' + quote(candidate['doi'], safe='/():;._-')]
-                        if candidate['doi'] else [])
-            else:
-                urls = candidate['urls']
-            job.urls.extend(urls)
-            logger.info('Trying title match for %s: %s (DOI %s)', job.entry['ID'],
-                        candidate['title'], candidate['doi'] or '(unavailable)')
+        activate_next_candidate(job, logger)
         if not job.urls or job.requests >= 20:
-            logger.error('No PDF downloaded for %s: no usable PDF link or request limit reached',
-                         job.entry['ID'])
+            logger.error('No PDF downloaded for %s: no usable PDF link or request limit reached', job.entry['ID'])
             failed += 1
             if progress is not None:
                 progress.finished(False)
             continue
-        raw_url = job.urls.popleft()
-        url = clean_url(raw_url)
+        url = clean_url(job.urls.popleft())
         if url in job.visited:
             pending.append(job)
             continue
@@ -246,13 +380,8 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         job.requests += 1
         job.immediate_retry = False
         limiter.started(url)
-        success = False
-        using_browser = is_acm_entry(job.entry) or url in job.browser_urls
         discovering = url == job.discovery_url
-        if discovering:
-            using_browser = False
-        verifier = ((lambda path: verify_pdf(path, job.entry, job.active_candidate))
-                    if job.active_candidate is not None else None)
+        using_browser = not discovering and (is_acm_entry(job.entry) or url in job.browser_urls)
         if progress is not None:
             display_entry = dict(job.entry)
             if job.active_candidate is not None and job.active_candidate['doi']:
@@ -262,117 +391,19 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         try:
             if using_browser:
                 transport = browser_download if is_acm_entry(job.entry) else browser_fallback
-                if transport is None:
-                    raise RuntimeError('Browser download transport is not available.')
-                data = transport(url, timeout, max_bytes)
-                if progress is not None:
-                    progress.total_bytes(len(data))
-                save_pdf(job.destination, data, iter(()), max_bytes, progress, verifier)
-                if job.active_candidate is not None:
-                    if job.active_candidate['doi']:
-                        job.entry['doi'] = job.active_candidate['doi']
-                    job.entry['url'] = getattr(data, 'url', url)
-                job.entry['file'] = str(job.destination.resolve())
-                downloaded += 1
-                if progress is not None:
-                    progress.finished(True)
-                logger.info('Saved through browser: %s', job.destination)
-                continue
-            with session.get(url, stream=True, allow_redirects=False, timeout=timeout) as response:
-                if response.status_code in (429, 503) and response.headers.get('Retry-After'):
-                    limiter.defer(url, retry_after(response.headers['Retry-After']))
-                if response.status_code in (429, 500, 502, 503, 504):
-                    attempts = job.retries.get(url, 0)
-                    if attempts < max_retries:
-                        job.retries[url] = attempts + 1
-                        job.visited.remove(url)
-                        job.urls.appendleft(url)
-                        job.immediate_retry = True
-                        logger.warning('HTTP %s for %s; queued retry %d',
-                                       response.status_code, job.entry['ID'], attempts + 1)
-                        pending.insert(0, job)
-                        continue
-                response.raise_for_status()
-                if discovering:
-                    if response.status_code != 200:
-                        raise ValueError('Title lookup returned HTTP %s' % response.status_code)
-                    body = bytearray()
-                    for chunk in response.iter_content(chunk_size=8192):
-                        body.extend(chunk)
-                        if progress is not None:
-                            progress.advance(len(chunk))
-                        if len(body) > 2*1024*1024:
-                            raise ValueError('Title lookup response exceeds 2 MiB.')
-                    job.candidates.extend(rank_candidates(job.entry, json.loads(body)))
-                    if not job.candidates:
-                        logger.warning('No title match with sufficient author/abstract evidence for %s',
-                                       job.entry['ID'])
-                elif response.status_code in (301, 302, 303, 307, 308):
-                    if is_acm_entry(job.entry):
-                        raise ValueError('ACM PDF endpoint redirected; no alternative URLs allowed.')
-                    location = response.headers.get('Location')
-                    if not location:
-                        raise ValueError('Redirect has no Location header.')
-                    job.urls.appendleft(clean_url(urljoin(url, location)))
-                elif response.status_code != 200:
-                    raise ValueError('Unexpected HTTP status %s' % response.status_code)
-                else:
-                    chunks = response.iter_content(chunk_size=8192)
-                    first = next(chunks, b'')
-                    if progress is not None:
-                        progress.total_bytes(response.headers.get('Content-Length'))
-                    if b'%PDF-' in first[:1024]:
-                        save_pdf(job.destination, first, chunks, max_bytes, progress, verifier)
-                        if job.active_candidate is not None:
-                            if job.active_candidate['doi']:
-                                job.entry['doi'] = job.active_candidate['doi']
-                            job.entry['url'] = getattr(response, 'url', url)
-                        success = True
-                    else:
-                        if is_acm_entry(job.entry):
-                            raise ValueError('ACM PDF endpoint returned a non-PDF response; '
-                                             'no alternative URLs allowed.')
-                        body = bytearray(first)
-                        if progress is not None:
-                            progress.advance(len(first))
-                        for chunk in chunks:
-                            body.extend(chunk)
-                            if progress is not None:
-                                progress.advance(len(chunk))
-                            if len(body) > 2*1024*1024:
-                                raise ValueError('Non-PDF page exceeds 2 MiB discovery limit.')
-                        links = PdfLinks()
-                        links.feed(body.decode(response.encoding or 'utf-8', errors='replace'))
-                        for link in reversed(links.links[:10]):
-                            job.urls.appendleft(clean_url(urljoin(url, link)))
-                        if not links.links:
-                            raise ValueError('Response is not a PDF and advertises no PDF link.')
-        except Exception as error:
-            if progress is not None:
-                progress.status('Attempt failed; trying next option')
-            logger.error('Download failed for %s at %s: %s', job.entry['ID'], url, error)
-            job.immediate_retry = True
-            if isinstance(error, PdfVerificationError):
-                # A different transport cannot fix a paper identity mismatch.
-                job.urls.clear()
-                logger.warning('Rejected unverified PDF for %s; trying the next title match',
-                               job.entry['ID'])
-            elif not discovering and not using_browser and browser_fallback is not None and url not in job.browser_urls:
-                job.browser_urls.add(url)
-                job.visited.discard(url)
-                job.urls.appendleft(url)
-                logger.info('Queued browser fallback for %s at %s', job.entry['ID'], url)
-        if success:
-            job.entry['file'] = str(job.destination.resolve())
-            downloaded += 1
-            if progress is not None:
-                progress.finished(True)
-            logger.info('Saved %s', job.destination)
-        else:
-            if job.immediate_retry:
-                pending.insert(0, job)
+                result = download_with_browser(job, url, transport, timeout, progress)
             else:
-                pending.append(job)
+                result = download_with_http(job, url, session, limiter, logger, timeout, max_retries, progress)
+        except Exception as error:
+            handle_attempt_failure(job, url, error, using_browser, browser_fallback, logger, progress)
+            result = AttemptResult()
+        if result.downloaded_url is not None:
+            record_download(job, result.downloaded_url, logger, progress)
+            downloaded += 1
+        elif result.retry or job.immediate_retry:
+            pending.insert(0, job)
+        else:
+            pending.append(job)
     return downloaded, failed
 
 
@@ -395,7 +426,7 @@ def write_bibtex(database, output):
 
 
 def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
-                    max_bytes=100*1024*1024, max_retries=2,
+                    max_retries=2,
                     browser_profile=Path('.pdf-browser'), browser_download=None,
                     sources=None, exclude_sources=None, browser_fallback=None,
                     browser_headless=True, show_progress=False):
@@ -450,17 +481,17 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                 browser = stack.enter_context(BrowserPdfDownloader(
                     browser_profile, headless=browser_headless))
                 if browser_download is None:
-                    browser_download = lambda url, timeout, max_bytes: browser.download(
-                        url, timeout, max_bytes, progress=progress)
+                    browser_download = lambda url, timeout: browser.download(
+                        url, timeout, progress=progress)
                 if browser_fallback is None:
-                    browser_fallback = lambda url, timeout, max_bytes: browser.download(
-                        url, timeout, max_bytes, strict=False, limiter=limiter,
+                    browser_fallback = lambda url, timeout: browser.download(
+                        url, timeout, strict=False, limiter=limiter,
                         progress=progress)
             session = stack.enter_context(requests.Session())
             session.headers.update({'User-Agent': 'systematic-review-tools/pdf-downloader',
                                     'Accept': 'application/pdf,text/html;q=0.9,*/*;q=0.5'})
             downloaded, failed = download_queue(jobs, session, limiter, logger,
-                timeout=timeout, max_bytes=max_bytes, max_retries=max_retries,
+                timeout=timeout, max_retries=max_retries,
                 browser_download=browser_download, browser_fallback=browser_fallback,
                 progress=progress)
     finally:
@@ -499,7 +530,6 @@ def main(argv=None):
     parser.add_argument('--rate-limit', type=positive_number, default=2,
                         help='Requests per minute per hostname (default: 2).')
     parser.add_argument('--timeout', type=positive_number, default=30)
-    parser.add_argument('--max-size-mb', type=positive_number, default=100)
     parser.add_argument('--max-retries', type=int, default=2)
     parser.add_argument('--log-file', type=Path, default=Path('download_pdfs.log'))
     parser.add_argument('--browser-profile', type=Path, default=Path('.pdf-browser'),
@@ -532,7 +562,7 @@ def main(argv=None):
     try:
         downloaded, resumed, failed = download_bibtex(
             args.input, args.output, args.pdf_dir, logger, rate=args.rate_limit,
-            timeout=args.timeout, max_bytes=int(args.max_size_mb*1024*1024),
+            timeout=args.timeout,
             max_retries=args.max_retries, browser_profile=args.browser_profile,
             sources=args.sources, exclude_sources=args.exclude_sources,
             browser_headless=not args.show_browser, show_progress=not args.no_progress)

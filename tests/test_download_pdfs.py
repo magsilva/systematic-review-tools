@@ -209,7 +209,7 @@ class PdfDownloadTests(unittest.TestCase):
                 job = self.job(folder, 'fallback', 'https://pub.test/paper')
                 session = Session({'https://pub.test/paper': response}, clock)
                 starts = []
-                def browser(url, timeout, max_bytes):
+                def browser(url, timeout):
                     starts.append((url, clock()))
                     return PDF
                 self.assertEqual(download_queue([job], session, HostRateLimiter(clock=clock),
@@ -263,7 +263,7 @@ class PdfDownloadTests(unittest.TestCase):
             session = Session({'https://a.test/first': Response(status=403),
                                'https://b.test/second': Response(PDF)}, clock)
             calls_before_fallback = []
-            def browser(url, timeout, max_bytes):
+            def browser(url, timeout):
                 calls_before_fallback.extend(session.calls)
                 return PDF
             self.assertEqual(download_queue([first, second], session, HostRateLimiter(clock=clock),
@@ -307,19 +307,37 @@ class PdfDownloadTests(unittest.TestCase):
                 self.assertNotIn('file', job.entry)
                 self.assertEqual(list(Path(folder).iterdir()), [])
 
-    def test_size_limit_and_candidate_fallback(self):
+    def test_large_content_length_and_candidate_fallback(self):
         with tempfile.TemporaryDirectory() as folder:
             job = self.job(folder, 'large', 'https://a.test/large')
-            result = download_queue([job], Session({'https://a.test/large': Response(PDF)}),
-                                    HostRateLimiter(), self.logger, max_bytes=5)
-            self.assertEqual(result, (0, 1))
-            self.assertFalse(job.destination.exists())
+            result = download_queue([job], Session({'https://a.test/large': Response(
+                PDF, **{'Content-Length': str(200*1024*1024)})}),
+                HostRateLimiter(), self.logger)
+            self.assertEqual(result, (1, 0))
+            self.assertEqual(job.destination.read_bytes(), PDF)
             job = self.job(folder, 'fallback', 'https://a.test/missing')
             job.urls.append('https://b.test/paper.pdf')
             result = download_queue([job], Session({
                 'https://a.test/missing': Response(status=404),
                 'https://b.test/paper.pdf': Response(PDF)}), HostRateLimiter(), self.logger)
             self.assertEqual(result, (1, 0))
+
+    def test_streaming_pdf_larger_than_former_100_mib_limit(self):
+        class LargeResponse(Response):
+            def iter_content(self, chunk_size):
+                yield b'%PDF-1.4\n'
+                chunk = b' ' * (64*1024)
+                for _ in range(1616):  # 101 MiB, generated without buffering the whole PDF.
+                    yield chunk
+                yield b'\n%%EOF\n'
+
+        with tempfile.TemporaryDirectory() as folder:
+            job = self.job(folder, 'large', 'https://pub.test/large.pdf')
+            result = download_queue([job], Session({'https://pub.test/large.pdf': LargeResponse()}),
+                                    HostRateLimiter(), self.logger)
+            self.assertEqual(result, (1, 0))
+            self.assertGreater(job.destination.stat().st_size, 100*1024*1024)
+            self.assertEqual(job.entry['file'], str(job.destination.resolve()))
 
     def test_bibtex_output_and_resume(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -392,7 +410,7 @@ class PdfDownloadTests(unittest.TestCase):
                                                 browser_download=backend), (1, 0, 1))
                 self.assertEqual(download_bibtex(output, output, directory, self.logger,
                                                 browser_download=backend), (0, 1, 1))
-            backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1/a', 30, 100*1024*1024)
+            backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1/a', 30)
             self.assertEqual([url for url, _, _ in session.calls],
                              [discovery_url({'title': 'No DOI'}), discovery_url({'title': 'No DOI'})])
             entries = bibtexparser.loads(output.read_text()).entries
@@ -411,7 +429,7 @@ class PdfDownloadTests(unittest.TestCase):
                 self.assertEqual(download_queue([job], session, HostRateLimiter(), self.logger,
                                                browser_download=backend), (0, 1))
                 self.assertEqual(session.calls, [])
-                backend.assert_called_once_with(endpoint, 30, 100*1024*1024)
+                backend.assert_called_once_with(endpoint, 30)
 
     def test_acm_direct_pdf_download(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -425,7 +443,7 @@ class PdfDownloadTests(unittest.TestCase):
                 self.assertEqual(download_bibtex(source, output, directory, self.logger,
                                                 browser_download=backend), (1, 0, 0))
             self.assertEqual(session.calls, [])
-            backend.assert_called_once_with(endpoint, 30, 100*1024*1024)
+            backend.assert_called_once_with(endpoint, 30)
             self.assertTrue(Path(bibtexparser.loads(output.read_text()).entries[0]['file']).exists())
 
     def test_acm_browser_jobs_share_per_host_rate_limit(self):
@@ -436,7 +454,7 @@ class PdfDownloadTests(unittest.TestCase):
             for job in jobs:
                 job.entry['source'] = 'ACM'
             starts = []
-            def browser(url, timeout, max_bytes):
+            def browser(url, timeout):
                 starts.append(clock())
                 return PDF
             self.assertEqual(download_queue(jobs, Session({}), HostRateLimiter(clock=clock),

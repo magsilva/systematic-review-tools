@@ -87,9 +87,6 @@ def extract_pdf_text(path):
         raise PdfVerificationError('PDF is encrypted; cannot verify its contents.')
     text = []
     for page in reader.pages[:3]:
-        contents = page.get_contents()
-        if contents is not None and len(contents.get_data()) > 10*1024*1024:
-            raise PdfVerificationError('PDF page is too large for text verification.')
         text.append(page.extract_text() or '')
     return '\n'.join(text)
 

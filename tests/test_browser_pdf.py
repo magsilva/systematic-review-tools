@@ -17,6 +17,15 @@ def response(url, body, content_type):
 
 
 class BrowserPdfTests(unittest.TestCase):
+    def test_browser_pdf_is_not_rejected_by_content_length(self):
+        page = Mock()
+        reply = response('https://pub.test/large.pdf', PDF, 'application/pdf')
+        reply.headers['content-length'] = str(200*1024*1024)
+        page.goto.return_value = reply
+        backend = self.backend(page)
+        self.assertEqual(backend.download('https://pub.test/large.pdf', 30), PDF)
+        page.close.assert_called_once()
+
     def test_headless_default_and_visible_override(self):
         for options, expected in (({}, True), ({'headless': False}, False)):
             with self.subTest(options=options):
@@ -28,7 +37,7 @@ class BrowserPdfTests(unittest.TestCase):
                 with patch('playwright.sync_api.sync_playwright') as start:
                     start.return_value.start.return_value = runtime
                     with BrowserPdfDownloader('unused-test-profile', **options) as backend:
-                        self.assertEqual(backend.download('https://pub.test/a.pdf', 30, 1024), PDF)
+                        self.assertEqual(backend.download('https://pub.test/a.pdf', 30), PDF)
                 self.assertEqual(runtime.chromium.launch_persistent_context.call_args.kwargs['headless'],
                                  expected)
                 context.close.assert_called_once()
@@ -52,7 +61,7 @@ class BrowserPdfTests(unittest.TestCase):
         def sleep(seconds):
             now[0] += seconds
         with patch('browser_pdf.time.sleep', side_effect=sleep):
-            self.assertEqual(backend.download('https://pub.test/article', 30, 1024,
+            self.assertEqual(backend.download('https://pub.test/article', 30,
                                              strict=False, limiter=limiter), PDF)
         self.assertEqual(now[0], 30)
         self.assertEqual([call.args[0] for call in page.goto.call_args_list],
@@ -64,7 +73,7 @@ class BrowserPdfTests(unittest.TestCase):
         page.goto.return_value = response('https://other.test/paper.pdf', PDF, 'application/pdf')
         backend = self.backend(page)
         with self.assertRaisesRegex(ValueError, 'unexpected URL'):
-            backend.download('https://dl.acm.org/doi/pdf/10.1/a', 30, 1024)
+            backend.download('https://dl.acm.org/doi/pdf/10.1/a', 30)
         handler = page.route.call_args.args[1]
         route = Mock()
         route.request.is_navigation_request.return_value = True

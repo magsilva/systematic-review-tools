@@ -166,7 +166,7 @@ class PaperDiscoveryTests(unittest.TestCase):
             backend = Mock(return_value=MATCHING_PDF())
             result = download_queue([job], session, HostRateLimiter(), self.logger, browser_download=backend)
             self.assertEqual(result, (1, 0))
-            backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1234/paper', 30, 100*1024*1024)
+            backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1234/paper', 30)
             self.assertEqual([u for u, _, _ in session.calls], [lookup])
 
     def test_excluded_missing_identifier_entry_does_not_trigger_discovery(self):

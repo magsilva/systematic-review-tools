@@ -41,7 +41,7 @@ class BrowserPdfDownloader:
                     if args[0] is None:
                         raise
 
-    def download(self, url, timeout, max_bytes, *, strict=True, limiter=None, progress=None):
+    def download(self, url, timeout, *, strict=True, limiter=None, progress=None):
         if self.runtime is None:
             try:
                 from playwright.sync_api import sync_playwright
@@ -96,8 +96,6 @@ class BrowserPdfDownloader:
                         if limiter is not None and download.url != target:
                             limiter.started(download.url)
                         path = Path(download.path())
-                        if path.stat().st_size > max_bytes:
-                            raise ValueError('PDF exceeds the configured size limit.')
                         return PdfBytes(path.read_bytes(), download.url)
                     if navigation_error is not None:
                         raise navigation_error
@@ -108,20 +106,15 @@ class BrowserPdfDownloader:
                     if response.status != 200:
                         raise ValueError('Browser returned HTTP %s. Login or security '
                                          'verification may be required.' % response.status)
-                    length = response.headers.get('content-length')
-                    if length and int(length) > max_bytes:
-                        raise ValueError('PDF exceeds the configured size limit.')
                     if strict or 'application/pdf' in response.headers.get('content-type', '').lower():
                         body = response.body()
-                        if len(body) > max_bytes:
-                            raise ValueError('PDF exceeds the configured size limit.')
                         return PdfBytes(body, response.url)
-                    # Some servers omit the PDF content type. Inspect bounded bodies.
+                    # Some servers omit the PDF content type. Inspect the signature first.
                     body = response.body()
-                    if len(body) > max_bytes:
-                        raise ValueError('Response exceeds the configured size limit.')
                     if b'%PDF-' in body[:1024]:
                         return PdfBytes(body, response.url)
+                    if len(body) > 2*1024*1024:
+                        raise ValueError('HTML page exceeds the 2 MiB discovery limit.')
                     links = page.locator('meta[name="citation_pdf_url"], a[href], link[href]').evaluate_all(
                         """els => els.map(e => e.tagName === 'META' ? e.content :
                             ((e.type === 'application/pdf' || /\\.pdf(?:[?#]|$)/i.test(e.href))
