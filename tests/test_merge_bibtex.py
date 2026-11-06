@@ -16,6 +16,23 @@ def paper(key, **fields):
 
 
 class MergeBibtexTests(unittest.TestCase):
+    def test_source_union_including_bridge_records(self):
+        result = merge_entries([
+            [paper('a', doi='10.1/a', source='scopus; Scopus')],
+            [paper('b', scopus_eid='2-s2.0-1', source='ACM; ')],
+            [paper('c', doi='10.1/a', scopus_eid='2-s2.0-1', source='acm')],
+        ])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['source'], 'ACM; Scopus')
+        self.assertEqual(merge_entries([result, result])[0]['source'], 'ACM; Scopus')
+
+    def test_missing_and_distinct_sources(self):
+        result = merge_entries([[paper('a', doi='10.1/a'),
+                                 paper('b', doi='10.1/a', source='Scopus'),
+                                 paper('c', doi='10.1/c', source='ACM'),
+                                 paper('d', doi='10.1/d')]])
+        self.assertEqual([e.get('source') for e in result], ['Scopus', 'ACM', None])
+
     def test_unmatched_literal_braces_are_retained(self):
         with tempfile.TemporaryDirectory() as folder:
             source, output = Path(folder) / 'in.bib', Path(folder) / 'out.bib'
@@ -75,12 +92,13 @@ class MergeBibtexTests(unittest.TestCase):
     def test_files_round_trip_and_failure_preserves_output(self):
         with tempfile.TemporaryDirectory() as folder:
             first, second, output = [Path(folder) / name for name in ('a.bib', 'b.bib', 'out.bib')]
-            first.write_text('@string{pub="ACM"}\n@article{a, title={Café}, doi={10.1/a}, publisher=pub}', encoding='utf-8')
-            second.write_text('@article{b, title={Café}, doi={10.1/a}, abstract={A study}}', encoding='utf-8')
+            first.write_text('@string{pub="ACM"}\n@article{a, title={Café}, doi={10.1/a}, publisher=pub, source={ACM}}', encoding='utf-8')
+            second.write_text('@article{b, title={Café}, doi={10.1/a}, abstract={A study}, source={Scopus}}', encoding='utf-8')
             self.assertEqual(merge_files([first, second], output), (2, 1))
             database = bibtexparser.loads(output.read_text(encoding='utf-8'))
             self.assertEqual(database.entries[0]['publisher'], 'ACM')
             self.assertEqual(database.entries[0]['abstract'], 'A study')
+            self.assertEqual(database.entries[0]['source'], 'ACM; Scopus')
             previous = output.read_bytes()
             second.write_text('@article{broken, title={oops')
             with self.assertRaises(ValueError):

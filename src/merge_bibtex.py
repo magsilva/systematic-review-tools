@@ -11,7 +11,7 @@ import tempfile
 import unicodedata
 from urllib.parse import unquote
 
-from bibtex_io import parse_bibtex
+from bibtex_io import merge_sources, parse_bibtex
 
 
 def normalize_doi(value):
@@ -85,6 +85,9 @@ def merge_entries(sources, logger=None):
         for field, value in other['entry'].items():
             if field == 'ID' or not value.strip():
                 continue
+            if field == 'source':
+                target['entry']['source'] = merge_sources(target['entry'].get('source', ''), value)
+                continue
             current = target['entry'].get(field, '')
             if not current.strip() or (field == 'ENTRYTYPE' and current == 'misc'):
                 target['entry'][field] = value
@@ -97,6 +100,8 @@ def merge_entries(sources, logger=None):
     for source_number, entries in enumerate(sources):
         for original in entries:
             entry = dict(original)
+            if 'source' in entry:
+                entry['source'] = merge_sources(entry['source'])
             key = entry['ID']
             keys = identity_keys(entry)
             number = len(groups)

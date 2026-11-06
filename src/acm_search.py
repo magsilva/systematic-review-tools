@@ -10,7 +10,7 @@ import tempfile
 from urllib.parse import urlencode
 import webbrowser
 
-from bibtex_io import parse_bibtex
+from bibtex_io import merge_sources, parse_bibtex
 
 
 def build_search_url(query):
@@ -21,12 +21,19 @@ def build_search_url(query):
 
 
 def import_bibtex(source, output):
-    """Validate and atomically copy a user-exported BibTeX file unchanged."""
+    """Validate a user export, tag every entry with ACM, and atomically save it."""
+    import bibtexparser
+    from bibtexparser.bwriter import BibTexWriter
+
     source, output = Path(source), Path(output)
     content = source.read_text(encoding='utf-8-sig')
     database = parse_bibtex(content, source, require_titles=True)
-    if source.resolve() == output.resolve():
-        return len(database.entries)
+    for entry in database.entries:
+        entry['source'] = merge_sources(entry.get('source', ''), 'ACM')
+    writer = BibTexWriter()
+    writer.contents = ['preambles', 'entries']
+    writer.order_entries_by = None
+    content = bibtexparser.dumps(database, writer=writer)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',

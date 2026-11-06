@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+import bibtexparser
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import acm_search
 import main as application
@@ -42,7 +44,21 @@ class AcmSearchTests(unittest.TestCase):
             content = '@article{a, title={A {Study}}, author={Silva, José}, year={2026}}\n'
             source.write_text(content, encoding='utf-8')
             self.assertEqual(acm_search.import_bibtex(source, output), 1)
-            self.assertEqual(output.read_text(encoding='utf-8'), content)
+            original = bibtexparser.loads(content).entries[0]
+            imported = bibtexparser.loads(output.read_text(encoding='utf-8')).entries[0]
+            self.assertEqual(imported, dict(original, source='ACM'))
+            self.assertEqual(source.read_text(encoding='utf-8'), content)
+
+    def test_source_union_and_reimport_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'export.bib'
+            source.write_text('@article{a, title={Test}, source={scopus; ACM; acm}}')
+            self.assertEqual(acm_search.import_bibtex(source, source), 1)
+            imported = bibtexparser.loads(source.read_text()).entries[0]
+            self.assertEqual(imported['source'], 'ACM; Scopus')
+            first_export = source.read_bytes()
+            acm_search.import_bibtex(source, source)
+            self.assertEqual(source.read_bytes(), first_export)
 
     def test_invalid_import_is_logged_and_preserves_output(self):
         for content in ('<html>Access denied</html>', '',
@@ -77,7 +93,8 @@ class AcmSearchTests(unittest.TestCase):
                 '--import-bibtex', str(source), '--log-file', str(Path(folder) / 'log')])
             self.assertEqual(status, 0)
             self.assertIn('Imported 1 records', stdout.getvalue())
-            self.assertEqual(source.read_bytes(), output.read_bytes())
+            self.assertEqual(bibtexparser.loads(output.read_text()).entries[0]['source'], 'ACM')
+            self.assertEqual(source.read_text(), '@inproceedings{a, title={Test}}')
             browser.assert_not_called()
 
 

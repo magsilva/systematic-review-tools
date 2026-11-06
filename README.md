@@ -22,6 +22,14 @@ distinct records receive numeric suffixes. `crossref` and `xref` references are
 updated using their original input file's keys. Ambiguous duplicate keys within
 one input file cause an error unless the records can be identified as duplicates.
 
+The `source` field is merged as a set rather than treated as a conflict.
+Scopus exports include `source = {Scopus}`, and ACM imports include
+`source = {ACM}`. A duplicate found in both engines becomes
+`source = {ACM; Scopus}`. Source names are separated by semicolons, trimmed,
+deduplicated without regard to case, and sorted for consistent output. Existing
+source names are preserved, with ACM and Scopus spelling standardized. Missing
+sources in older files are not inferred from filenames or publishers.
+
 The script expands BibTeX string macros, preserves Unicode and distinct preambles,
 and writes a UTF-8 file atomically. Input files must differ from the output file.
 Empty input files are allowed. Unparsed content/comments cause an error to avoid
@@ -113,7 +121,9 @@ ACM errors are recorded in `acm_search.log` and stderr (override with
 no papers have been imported; a successful import reports the parsed record
 count. Invalid imports exit 1 and preserve existing output. Imports must be
 UTF-8 BibTeX with titled entries and no unparsed text/comments. Exported fields
-are retained without conversion. Validation cannot establish that an export
+are retained semantically, with an added ACM source (unioned with any existing
+sources). The importer rewrites BibTeX formatting and expands string macros.
+Validation cannot establish that an export
 matches the query or contains every result; verify those details in ACM.
 
 No dltHub dependency or ACM API credentials are needed: the

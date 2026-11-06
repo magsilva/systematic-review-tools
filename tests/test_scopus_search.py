@@ -24,12 +24,13 @@ class ScopusSearchTests(unittest.TestCase):
                          'author = {Silva, Maria and Smith, John}',
                          r'title = {A \textbraceleft{}study\textbraceright{} \& 50\%}',
                          'year = {2025}', 'booktitle = {Proceedings}',
-                         'pages = {10--20}', 'abstract = {An abstract}'):
+                         'pages = {10--20}', 'abstract = {An abstract}',
+                         'source = {Scopus}'):
             self.assertIn(expected, result)
 
     def test_missing_metadata(self):
         self.assertEqual(scopus_search.record_to_bibtex(SimpleNamespace(), 1),
-                         '@misc{scopus_result_1,\n\n}\n')
+                         '@misc{scopus_result_1,\n  source = {Scopus}\n}\n')
 
     def test_retrieval_and_empty_results(self):
         package = Mock()

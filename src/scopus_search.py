@@ -30,7 +30,7 @@ def record_to_bibtex(record, index):
                   'ch': 'incollection', 'bk': 'book'}.get(subtype, 'misc')
     identifier = value('eid') or value('doi') or 'result'
     key = 'scopus_' + re.sub(r'[^A-Za-z0-9_-]', '_', str(identifier)) + '_' + str(index)
-    fields = {}
+    fields = {'source': 'Scopus'}
     if value('author_names'):
         fields['author'] = ' and '.join(
             escape_bibtex(author.strip()) for author in value('author_names').split(';')

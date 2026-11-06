@@ -1,6 +1,19 @@
 """Strict BibTeX parsing with source-file line diagnostics (bibtexparser 1.x)."""
 
 
+def merge_sources(*values):
+    """Return a deterministic, case-insensitive union of semicolon-separated sources."""
+    names = {}
+    canonical = {'acm': 'ACM', 'scopus': 'Scopus'}
+    for value in values:
+        for name in value.split(';'):
+            name = name.strip()
+            if name:
+                key = name.casefold()
+                names.setdefault(key, canonical.get(key, name))
+    return '; '.join(names[key] for key in sorted(names))
+
+
 class BibtexParseError(ValueError):
     """A parse/validation failure associated with a one-based source line."""
 
