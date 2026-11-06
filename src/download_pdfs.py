@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 import hashlib
 from html.parser import HTMLParser
+import json
 import logging
 import math
 import os
@@ -19,6 +20,7 @@ import time
 from urllib.parse import quote, urljoin, urlsplit
 
 from bibtex_io import parse_bibtex
+from paper_discovery import (PdfVerificationError, discovery_url, rank_candidates, verify_pdf)
 
 
 def clean_url(value):
@@ -128,6 +130,9 @@ class DownloadJob:
     requests: int = 0
     browser_urls: set = field(default_factory=set)
     immediate_retry: bool = False
+    discovery_url: str = None
+    candidates: deque = field(default_factory=deque)
+    active_candidate: dict = None
 
 
 def pdf_filename(entry):
@@ -149,7 +154,7 @@ def is_pdf(path):
         return False
 
 
-def save_pdf(destination, first, chunks, max_bytes, progress=None):
+def save_pdf(destination, first, chunks, max_bytes, progress=None, verifier=None):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as stream:
@@ -169,6 +174,10 @@ def save_pdf(destination, first, chunks, max_bytes, progress=None):
                     progress.advance(len(chunk))
         if not is_pdf(temporary):
             raise ValueError('Response is not a complete PDF (missing signature or EOF).')
+        if verifier is not None:
+            if progress is not None:
+                progress.status('Verifying title, authors and abstract')
+            verifier(temporary)
         os.replace(temporary, destination)
     finally:
         if temporary is not None and temporary.exists():
@@ -202,6 +211,17 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         # Rotate jobs after each request so other servers can run during cooldowns.
         position = min(range(len(pending)), key=lambda n: delay_for(pending[n]))
         job = pending.pop(position)
+        while not job.urls and job.candidates:
+            job.active_candidate = job.candidates.popleft()
+            candidate = job.active_candidate
+            if is_acm_entry(job.entry):
+                urls = (['https://dl.acm.org/doi/pdf/' + quote(candidate['doi'], safe='/():;._-')]
+                        if candidate['doi'] else [])
+            else:
+                urls = candidate['urls']
+            job.urls.extend(urls)
+            logger.info('Trying title match for %s: %s (DOI %s)', job.entry['ID'],
+                        candidate['title'], candidate['doi'] or '(unavailable)')
         if not job.urls or job.requests >= 20:
             logger.error('No PDF downloaded for %s: no usable PDF link or request limit reached',
                          job.entry['ID'])
@@ -228,8 +248,17 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         limiter.started(url)
         success = False
         using_browser = is_acm_entry(job.entry) or url in job.browser_urls
+        discovering = url == job.discovery_url
+        if discovering:
+            using_browser = False
+        verifier = ((lambda path: verify_pdf(path, job.entry, job.active_candidate))
+                    if job.active_candidate is not None else None)
         if progress is not None:
-            progress.start(job.entry, url, 'Browser (waiting for file)' if using_browser else 'HTTP')
+            display_entry = dict(job.entry)
+            if job.active_candidate is not None and job.active_candidate['doi']:
+                display_entry['doi'] = job.active_candidate['doi']
+            progress.start(display_entry, url, 'Title lookup' if discovering else
+                           ('Browser (waiting for file)' if using_browser else 'HTTP'))
         try:
             if using_browser:
                 transport = browser_download if is_acm_entry(job.entry) else browser_fallback
@@ -238,7 +267,11 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                 data = transport(url, timeout, max_bytes)
                 if progress is not None:
                     progress.total_bytes(len(data))
-                save_pdf(job.destination, data, iter(()), max_bytes, progress)
+                save_pdf(job.destination, data, iter(()), max_bytes, progress, verifier)
+                if job.active_candidate is not None:
+                    if job.active_candidate['doi']:
+                        job.entry['doi'] = job.active_candidate['doi']
+                    job.entry['url'] = getattr(data, 'url', url)
                 job.entry['file'] = str(job.destination.resolve())
                 downloaded += 1
                 if progress is not None:
@@ -260,7 +293,21 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                         pending.insert(0, job)
                         continue
                 response.raise_for_status()
-                if response.status_code in (301, 302, 303, 307, 308):
+                if discovering:
+                    if response.status_code != 200:
+                        raise ValueError('Title lookup returned HTTP %s' % response.status_code)
+                    body = bytearray()
+                    for chunk in response.iter_content(chunk_size=8192):
+                        body.extend(chunk)
+                        if progress is not None:
+                            progress.advance(len(chunk))
+                        if len(body) > 2*1024*1024:
+                            raise ValueError('Title lookup response exceeds 2 MiB.')
+                    job.candidates.extend(rank_candidates(job.entry, json.loads(body)))
+                    if not job.candidates:
+                        logger.warning('No title match with sufficient author/abstract evidence for %s',
+                                       job.entry['ID'])
+                elif response.status_code in (301, 302, 303, 307, 308):
                     if is_acm_entry(job.entry):
                         raise ValueError('ACM PDF endpoint redirected; no alternative URLs allowed.')
                     location = response.headers.get('Location')
@@ -275,7 +322,11 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                     if progress is not None:
                         progress.total_bytes(response.headers.get('Content-Length'))
                     if b'%PDF-' in first[:1024]:
-                        save_pdf(job.destination, first, chunks, max_bytes, progress)
+                        save_pdf(job.destination, first, chunks, max_bytes, progress, verifier)
+                        if job.active_candidate is not None:
+                            if job.active_candidate['doi']:
+                                job.entry['doi'] = job.active_candidate['doi']
+                            job.entry['url'] = getattr(response, 'url', url)
                         success = True
                     else:
                         if is_acm_entry(job.entry):
@@ -301,7 +352,12 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                 progress.status('Attempt failed; trying next option')
             logger.error('Download failed for %s at %s: %s', job.entry['ID'], url, error)
             job.immediate_retry = True
-            if not using_browser and browser_fallback is not None and url not in job.browser_urls:
+            if isinstance(error, PdfVerificationError):
+                # A different transport cannot fix a paper identity mismatch.
+                job.urls.clear()
+                logger.warning('Rejected unverified PDF for %s; trying the next title match',
+                               job.entry['ID'])
+            elif not discovering and not using_browser and browser_fallback is not None and url not in job.browser_urls:
                 job.browser_urls.add(url)
                 job.visited.discard(url)
                 job.urls.appendleft(url)
@@ -364,19 +420,25 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
             continue
         infer_source(entry)
         destination = directory / pdf_filename(entry)
+        needs_discovery = not any(entry.get(name, '').strip() for name in ('doi', 'url', 'pdf', 'pdf_url'))
         if destination.exists():
             if is_pdf(destination):
-                entry['file'] = str(destination.resolve())
-                resumed += 1
-                continue
-            raise ValueError('Existing destination is not a PDF: ' + str(destination))
+                if not needs_discovery:
+                    entry['file'] = str(destination.resolve())
+                    resumed += 1
+                    continue
+            else:
+                raise ValueError('Existing destination is not a PDF: ' + str(destination))
         urls = []
         for url in candidate_urls(entry):
             try:
                 urls.append(clean_url(url))
             except ValueError as error:
                 logger.error('%s: %s', entry['ID'], error)
-        jobs.append(DownloadJob(entry, destination, deque(urls)))
+        lookup = discovery_url(entry) if needs_discovery and entry.get('title', '').strip() else None
+        if lookup:
+            urls = [lookup]
+        jobs.append(DownloadJob(entry, destination, deque(urls), discovery_url=lookup))
     try:
         with ExitStack() as stack:
             progress = None

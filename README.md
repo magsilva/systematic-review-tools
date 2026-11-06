@@ -51,19 +51,56 @@ Excluded entries are preserved unchanged in the output and do not count as failu
 For entries whose semicolon-separated `source` includes ACM (case-insensitive),
 the downloader uses a visible browser to retrieve only
 `https://dl.acm.org/doi/pdf/<DOI>`. Other URL fields are
-ignored, and redirects or HTML discovery are not followed. ACM entries without
-a DOI fail without making a request. This also applies to `source = {ACM; Scopus}`.
+ignored, and redirects or HTML discovery are not followed. ACM PDF retrieval
+requires a DOI, either already present or verified through title discovery.
+This also applies to `source = {ACM; Scopus}`.
 When `source` is absent and the publisher is `ACM` or
 `Association for Computing Machinery` (case-insensitive), the downloader adds
 `source = {acm}` to the output and applies these same rules. Existing source
 fields, including empty fields, are not overwritten. Inference also applies to
 reused PDFs and entries that fail to download.
-ACM entries never fall back to the HTTP client. Install browser support first:
+Entries with no DOI, URL, or explicit PDF link use the title lookup described
+below before being considered unresolved. If a DOI is discovered for an ACM
+entry, only its ACM PDF endpoint is used. ACM entries never fall back to the
+HTTP client for PDF retrieval (title metadata lookup uses Crossref HTTP).
+Install browser support first:
 
 ```sh
 .venv/bin/python -m pip install -r requirements-browser.txt
 .venv/bin/python -m playwright install chromium
 ```
+
+### Finding missing DOIs and download links
+
+When `doi`, `url`, `pdf`, and `pdf_url` are all missing/blank, the downloader
+queries the [Crossref REST API](https://www.crossref.org/documentation/retrieve-metadata/rest-api/)
+using the entry's title. It evaluates up to five results, requiring at least
+0.92 normalized title similarity and rejecting conflicting publication years
+and author lists when both records provide them. Explicit PDF links and DOI
+landing pages from accepted candidates enter the existing download queue.
+Metadata requests obey the same per-host rate limit. Source exclusions are
+applied before discovery, so excluded entries trigger no lookup.
+
+Discovered PDFs are staged in temporary files and checked with
+[pypdf text extraction](https://pypdf.readthedocs.io/en/stable/user/extract-text.html)
+before being committed. Verification checks the first three pages for the
+title near the beginning (exact normalized match or at least 0.90 similarity),
+at least 75% of expected author surnames in the header text, and at least 65%
+of the abstract's normalized word pairs. Expected authors and abstract come
+from the BibTeX entry when available, otherwise from the matched Crossref
+record. At least one author and an abstract of eight words are required.
+These are conservative text-based heuristics, not a guarantee of identity;
+scanned PDFs, unusual layouts, or missing metadata may remain unresolved.
+No OCR is performed.
+
+Only a verified download adds its discovered DOI (if available), sets `url`
+to the actual PDF download URL, and sets `file` to its saved path. Original
+author/abstract metadata is preserved. Rejected PDFs are discarded and the next
+candidate is tried; entries and existing PDFs remain unchanged if verification
+fails. Existing PDFs belonging to entries without identifiers are not accepted
+as a resume shortcut: title discovery and verification must still succeed.
+Already-identified entries continue to use their existing download behavior.
+Crossref may not index every paper or supply a usable full-text link or abstract.
 
 The console script uses a dedicated **headless Chromium** session by default,
 so download attempts do not open browser windows. Add `--show-browser` to use

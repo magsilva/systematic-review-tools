@@ -5,6 +5,14 @@ import time
 from urllib.parse import urljoin, urlsplit
 
 
+class PdfBytes(bytes):
+    """PDF payload carrying the final browser download URL for provenance."""
+    def __new__(cls, data, url):
+        result = super().__new__(cls, data)
+        result.url = url
+        return result
+
+
 class BrowserPdfDownloader:
     """Keep one isolated persistent browser session for an entire download queue."""
 
@@ -90,7 +98,7 @@ class BrowserPdfDownloader:
                         path = Path(download.path())
                         if path.stat().st_size > max_bytes:
                             raise ValueError('PDF exceeds the configured size limit.')
-                        return path.read_bytes()
+                        return PdfBytes(path.read_bytes(), download.url)
                     if navigation_error is not None:
                         raise navigation_error
                     if response is None or (strict and response.url != url):
@@ -107,13 +115,13 @@ class BrowserPdfDownloader:
                         body = response.body()
                         if len(body) > max_bytes:
                             raise ValueError('PDF exceeds the configured size limit.')
-                        return body
+                        return PdfBytes(body, response.url)
                     # Some servers omit the PDF content type. Inspect bounded bodies.
                     body = response.body()
                     if len(body) > max_bytes:
                         raise ValueError('Response exceeds the configured size limit.')
                     if b'%PDF-' in body[:1024]:
-                        return body
+                        return PdfBytes(body, response.url)
                     links = page.locator('meta[name="citation_pdf_url"], a[href], link[href]').evaluate_all(
                         """els => els.map(e => e.tagName === 'META' ? e.content :
                             ((e.type === 'application/pdf' || /\\.pdf(?:[?#]|$)/i.test(e.href))

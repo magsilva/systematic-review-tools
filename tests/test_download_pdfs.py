@@ -13,6 +13,7 @@ import bibtexparser
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from download_pdfs import (DownloadJob, HostRateLimiter, candidate_urls, download_bibtex,
                            download_queue, main, matches_sources, pdf_filename)
+from paper_discovery import discovery_url
 
 
 PDF = b'%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n'
@@ -384,7 +385,7 @@ class PdfDownloadTests(unittest.TestCase):
             source, output, directory = (Path(folder) / p for p in ('in.bib', 'out.bib', 'pdfs'))
             source.write_text('@article{a, title={Test}, publisher={ACM}, doi={10.1/a}}\n'
                               '@article{b, title={No DOI}, publisher={Association for Computing Machinery}}')
-            session = Session({})
+            session = Session({discovery_url({'title': 'No DOI'}): Response(b'{"message":{"items":[]}}')})
             backend = Mock(return_value=PDF)
             with patch('requests.Session', return_value=session):
                 self.assertEqual(download_bibtex(source, output, directory, self.logger,
@@ -392,7 +393,8 @@ class PdfDownloadTests(unittest.TestCase):
                 self.assertEqual(download_bibtex(output, output, directory, self.logger,
                                                 browser_download=backend), (0, 1, 1))
             backend.assert_called_once_with('https://dl.acm.org/doi/pdf/10.1/a', 30, 100*1024*1024)
-            self.assertEqual(session.calls, [])
+            self.assertEqual([url for url, _, _ in session.calls],
+                             [discovery_url({'title': 'No DOI'}), discovery_url({'title': 'No DOI'})])
             entries = bibtexparser.loads(output.read_text()).entries
             self.assertEqual([e['source'] for e in entries], ['acm', 'acm'])
             self.assertIn('file', entries[0])
