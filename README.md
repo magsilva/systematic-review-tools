@@ -55,7 +55,9 @@ ACM entries never fall back to the HTTP client. Install browser support first:
 .venv/bin/python -m playwright install chromium
 ```
 
-The console script uses a dedicated visible Chromium session, with a profile
+The console script uses a dedicated **headless Chromium** session by default,
+so download attempts do not open browser windows. Add `--show-browser` to use
+a visible browser for troubleshooting or interactive login. It uses a profile
 at `.pdf-browser` (override with `--browser-profile`). It does not share the
 Codex in-app browser's login session. Browser navigation/attachment responses
 are saved and validated before `file` is set. Browser login or security checks

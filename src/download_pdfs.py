@@ -300,7 +300,8 @@ def write_bibtex(database, output):
 def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     max_bytes=100*1024*1024, max_retries=2,
                     browser_profile=Path('.pdf-browser'), browser_download=None,
-                    sources=None, exclude_sources=None, browser_fallback=None):
+                    sources=None, exclude_sources=None, browser_fallback=None,
+                    browser_headless=True):
     import requests
     source, output, directory = Path(source), Path(output), Path(directory)
     database = parse_bibtex(source.read_text(encoding='utf-8-sig'), source)
@@ -339,7 +340,8 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
         with ExitStack() as stack:
             if browser_download is None or browser_fallback is None:
                 from browser_pdf import BrowserPdfDownloader
-                browser = stack.enter_context(BrowserPdfDownloader(browser_profile))
+                browser = stack.enter_context(BrowserPdfDownloader(
+                    browser_profile, headless=browser_headless))
                 if browser_download is None:
                     browser_download = browser.download
                 if browser_fallback is None:
@@ -392,6 +394,8 @@ def main(argv=None):
     parser.add_argument('--log-file', type=Path, default=Path('download_pdfs.log'))
     parser.add_argument('--browser-profile', type=Path, default=Path('.pdf-browser'),
                         help='Isolated persistent browser profile for ACM downloads.')
+    parser.add_argument('--show-browser', action='store_true',
+                        help='Show Chromium instead of using the default headless browser.')
     args = parser.parse_args(argv)
     if args.max_retries < 0:
         parser.error('--max-retries must not be negative.')
@@ -415,7 +419,8 @@ def main(argv=None):
             args.input, args.output, args.pdf_dir, logger, rate=args.rate_limit,
             timeout=args.timeout, max_bytes=int(args.max_size_mb*1024*1024),
             max_retries=args.max_retries, browser_profile=args.browser_profile,
-            sources=args.sources, exclude_sources=args.exclude_sources)
+            sources=args.sources, exclude_sources=args.exclude_sources,
+            browser_headless=not args.show_browser)
         print('Downloaded %d; already saved %d; failed %d. BibTeX: %s' %
               (downloaded, resumed, failed, args.output))
         return 1 if failed else 0

@@ -1,4 +1,4 @@
-"""Lazy, visible browser transport for direct PDFs and publisher landing pages."""
+"""Lazy browser transport for direct PDFs and publisher landing pages."""
 
 from pathlib import Path
 import time
@@ -8,8 +8,9 @@ from urllib.parse import urljoin, urlsplit
 class BrowserPdfDownloader:
     """Keep one isolated persistent browser session for an entire download queue."""
 
-    def __init__(self, profile):
+    def __init__(self, profile, *, headless=True):
         self.profile = Path(profile)
+        self.headless = headless
         self.runtime = None
         self.context = None
 
@@ -19,10 +20,18 @@ class BrowserPdfDownloader:
     def __exit__(self, *args):
         try:
             if self.context is not None:
-                self.context.close()
+                try:
+                    self.context.close()
+                except Exception:
+                    if args[0] is None:
+                        raise
         finally:
             if self.runtime is not None:
-                self.runtime.stop()
+                try:
+                    self.runtime.stop()
+                except Exception:
+                    if args[0] is None:
+                        raise
 
     def download(self, url, timeout, max_bytes, *, strict=True, limiter=None):
         if self.runtime is None:
@@ -33,7 +42,7 @@ class BrowserPdfDownloader:
                                    'and run: python -m playwright install chromium') from error
             self.runtime = sync_playwright().start()
             self.context = self.runtime.chromium.launch_persistent_context(
-                str(self.profile.resolve()), headless=False, accept_downloads=True)
+                str(self.profile.resolve()), headless=self.headless, accept_downloads=True)
         if self.context is None:
             raise RuntimeError('Download browser could not be started.')
         page = self.context.new_page()

@@ -70,6 +70,16 @@ class Session:
 
 
 class PdfDownloadTests(unittest.TestCase):
+    def test_cli_headless_default_and_show_browser(self):
+        for options, expected in (([], True), (['--show-browser'], False)):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as folder:
+                with patch('download_pdfs.download_bibtex', return_value=(0, 0, 0)) as run, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(['input.bib', '-o', str(Path(folder)/'out.bib'),
+                                          '--pdf-dir', str(Path(folder)/'pdfs'),
+                                          '--log-file', str(Path(folder)/'log')] + options), 0)
+                self.assertEqual(run.call_args.kwargs['browser_headless'], expected)
+
     def test_source_filter_matches_any_source_and_inferred_acm(self):
         self.assertTrue(matches_sources({'source': 'ACM; Scopus'}, {'scopus'}))
         self.assertTrue(matches_sources({'publisher': 'Association for Computing Machinery'}, {'acm'}))

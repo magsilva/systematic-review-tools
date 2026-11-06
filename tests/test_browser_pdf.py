@@ -17,6 +17,23 @@ def response(url, body, content_type):
 
 
 class BrowserPdfTests(unittest.TestCase):
+    def test_headless_default_and_visible_override(self):
+        for options, expected in (({}, True), ({'headless': False}, False)):
+            with self.subTest(options=options):
+                page = Mock()
+                page.goto.return_value = response('https://pub.test/a.pdf', PDF, 'application/pdf')
+                context = Mock(new_page=Mock(return_value=page))
+                runtime = Mock()
+                runtime.chromium.launch_persistent_context.return_value = context
+                with patch('playwright.sync_api.sync_playwright') as start:
+                    start.return_value.start.return_value = runtime
+                    with BrowserPdfDownloader('unused-test-profile', **options) as backend:
+                        self.assertEqual(backend.download('https://pub.test/a.pdf', 30, 1024), PDF)
+                self.assertEqual(runtime.chromium.launch_persistent_context.call_args.kwargs['headless'],
+                                 expected)
+                context.close.assert_called_once()
+                runtime.stop.assert_called_once()
+
     def backend(self, page):
         backend = BrowserPdfDownloader('unused-test-profile')
         backend.runtime = Mock()
