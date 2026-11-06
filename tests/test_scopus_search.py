@@ -22,7 +22,7 @@ class ScopusSearchTests(unittest.TestCase):
         result = scopus_search.record_to_bibtex(record, 1)
         for expected in ('@inproceedings{scopus_2-s2_0-123_1,',
                          'author = {Silva, Maria and Smith, John}',
-                         r'title = {A \{study\} \& 50\%}',
+                         r'title = {A \textbraceleft{}study\textbraceright{} \& 50\%}',
                          'year = {2025}', 'booktitle = {Proceedings}',
                          'pages = {10--20}', 'abstract = {An abstract}'):
             self.assertIn(expected, result)

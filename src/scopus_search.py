@@ -13,7 +13,7 @@ import tempfile
 def escape_bibtex(value):
     """Escape literal metadata for a braced BibTeX field, preserving Unicode."""
     replacements = {
-        '\\': r'\textbackslash{}', '{': r'\{', '}': r'\}',
+        '\\': r'\textbackslash{}', '{': r'\textbraceleft{}', '}': r'\textbraceright{}',
         '&': r'\&', '%': r'\%', '$': r'\$', '#': r'\#',
         '_': r'\_', '~': r'\textasciitilde{}', '^': r'\textasciicircum{}',
     }

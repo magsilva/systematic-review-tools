@@ -1,5 +1,35 @@
 # Systematic review tools
 
+## Merge BibTeX files
+
+```sh
+.venv/bin/python -m pip install -r requirements-bibtex.txt
+.venv/bin/python src/merge_bibtex.py scopus.bib acm.bib --output merged.bib
+```
+
+Input order establishes priority. Duplicate records are matched by normalized
+DOI (including DOI URLs), Scopus EID, or an exact normalized title plus year.
+Title normalization ignores case, protective braces, and whitespace. Different
+nonempty DOIs or Scopus EIDs prevent a merge even if titles match. Citation keys
+alone never establish identity. Records without sufficient matching metadata
+remain separate; this is not fuzzy title matching.
+
+Duplicates contribute missing/blank fields to the first record. Conflicting
+nonempty fields retain the first value and generate warnings; `misc` entry types
+are upgraded when a more specific type is available. Author lists and abstracts
+are treated as complete fields, not concatenated. Citation key collisions on
+distinct records receive numeric suffixes. `crossref` and `xref` references are
+updated using their original input file's keys. Ambiguous duplicate keys within
+one input file cause an error unless the records can be identified as duplicates.
+
+The script expands BibTeX string macros, preserves Unicode and distinct preambles,
+and writes a UTF-8 file atomically. Input files must differ from the output file.
+Empty input files are allowed. Unparsed content/comments cause an error to avoid
+silently discarding malformed entries; remove comments before merging. Unresolved
+references produce warnings. Errors and conflict warnings go to stderr and
+`merge_bibtex.log` (override with `--log-file`). Exit status is 0 on success and
+1 on failure. The console reports the input, output, and merged duplicate counts.
+
 ## Console application
 
 Run the complete keyword-to-BibTeX workflow with:
