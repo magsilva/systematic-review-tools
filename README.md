@@ -49,6 +49,29 @@ to `filter_entries(entries, criteria)` or `filter_file(input, output, criteria)`
 Every criterion must accept an entry for it to be retained. `EntryTypeCriterion`
 provides the current include/exclude type rules.
 
+Filter by PICO terms in the title, abstract, and keywords:
+
+```sh
+.venv/bin/python src/filter_bibtex.py papers.bib --output selected.bib \
+  --include-type article inproceedings \
+  --population autism ADHD \
+  --intervention "software engineering" "software development"
+```
+
+Use `--population`, `--intervention`, `--control`, and `--outcome` with one or
+more terms; each option may be repeated. At least one term from **each supplied
+component** must occur in any of the three fields. Different components may
+match different fields. Omitted components and blank terms impose no restriction.
+PICO criteria and entry-type criteria must both pass.
+
+As in the legacy mapping filter, matching uses case-insensitive literal
+substrings, including quoted phrases; it does not interpret regular expressions
+or Boolean operators. A phrase must occur within a single field. Missing fields
+are treated as empty. TeX markup is decoded for matching, while original entry
+metadata is retained in the output. Python callers can pass
+`PicoCriterion(population=['autism'], intervention=['software engineering'])`
+alongside other criteria to `filter_entries` or `filter_file`.
+
 ## Download PDFs from a BibTeX file
 
 The CLI displays tqdm progress bars by default: an entry counter with downloaded,

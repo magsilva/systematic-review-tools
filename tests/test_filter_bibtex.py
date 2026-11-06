@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from bibtex_io import parse_bibtex, new_database, serialize_bibtex
-from filter_bibtex import Criterion, EntryTypeCriterion, filter_entries, filter_file, main
+from filter_bibtex import Criterion, EntryTypeCriterion, PicoCriterion, filter_entries, filter_file, main
 
 
 ENTRIES = [
@@ -20,6 +20,52 @@ ENTRIES = [
 
 
 class FilterBibtexTests(unittest.TestCase):
+    def test_pico_requires_every_supplied_component_across_fields(self):
+        criterion = PicoCriterion(population=['autism', 'ADHD'],
+                                  intervention=['software engineering'],
+                                  control=['usual care'], outcome=['productivity'])
+        entry = {'title': 'ADHD in SOFTWARE ENGINEERING',
+                 'abstract': 'Compared with usual care', 'keywords': 'productivity'}
+        self.assertTrue(criterion.accepts(entry))
+        for field in ('title', 'abstract', 'keywords'):
+            with self.subTest(field=field):
+                self.assertFalse(criterion.accepts({k: v for k, v in entry.items() if k != field}))
+
+    def test_pico_empty_components_missing_fields_and_literal_matching(self):
+        self.assertTrue(PicoCriterion().accepts({}))
+        self.assertTrue(PicoCriterion(population=[' ', 'Autism']).accepts({'abstract': 'autism'}))
+        self.assertFalse(PicoCriterion(population=['autism']).accepts({}))
+        self.assertFalse(PicoCriterion(population=['autism']).accepts({'author': 'autism'}))
+        self.assertFalse(PicoCriterion(intervention=['software engineering']).accepts(
+            {'title': 'software', 'abstract': 'engineering'}))
+        self.assertTrue(PicoCriterion(population=['auti']).accepts({'title': 'autistic'}))
+        self.assertFalse(PicoCriterion(population=['a.b']).accepts({'title': 'axb'}))
+
+    def test_pico_decodes_tex_without_modifying_entry(self):
+        entry = {'title': r'A {Software} Engineering study of neurodiversit\'{e}'}
+        original = dict(entry)
+        self.assertTrue(PicoCriterion(population=['neurodiversité'],
+                                      intervention=['software engineering']).accepts(entry))
+        self.assertEqual(entry, original)
+
+    def test_cli_pico_combines_with_type_filter_and_preserves_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source, output, log = (Path(folder)/p for p in ('in.bib', 'out.bib', 'log'))
+            source.write_text('@article{a, title={Autism}, abstract={Software engineering}, source={ACM}}\n'
+                              '@book{b, title={Autism software engineering}}\n'
+                              '@article{c, title={Autism}}\n'
+                              '@article{d, title={ADHD}, keywords={Software engineering}}')
+            original = source.read_bytes()
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = main([str(source), '-o', str(output), '--log-file', str(log),
+                               '--include-type', 'article', '--population', 'autism',
+                               '--population', 'ADHD', '--intervention', 'software engineering'])
+            self.assertEqual(status, 0)
+            entries = parse_bibtex(output.read_text()).entries
+            self.assertEqual([entry['ID'] for entry in entries], ['a', 'd'])
+            self.assertEqual(entries[0]['source'], 'ACM')
+            self.assertEqual(source.read_bytes(), original)
+
     def test_include_multiple_types_and_exclusion_priority(self):
         included = filter_entries(ENTRIES, [EntryTypeCriterion(['ARTICLE', 'inproceedings'])])
         self.assertEqual([entry['ID'] for entry in included], ['a', 'c'])

@@ -10,6 +10,7 @@ import re
 import sys
 
 from bibtex_io import read_bibtex, write_bibtex
+from pico_search import add_pico_arguments
 
 
 class Criterion(ABC):
@@ -36,6 +37,32 @@ class EntryTypeCriterion(Criterion):
         entry_type = entry.get('ENTRYTYPE', '').strip().casefold()
         return (entry_type not in self.exclude_types
                 and (self.include_types is None or entry_type in self.include_types))
+
+
+class PicoCriterion(Criterion):
+    """OR terms across title/abstract/keywords, AND supplied PICO components.
+
+    Matching uses case-insensitive literal substrings, as in the mapping filter.
+    Empty components impose no restriction. Metadata is never modified.
+    """
+
+    def __init__(self, population=(), intervention=(), control=(), outcome=()):
+        self.components = {
+            name: tuple(term.strip().casefold() for term in terms if term.strip())
+            for name, terms in zip(
+                ('population', 'intervention', 'control', 'outcome'),
+                (population, intervention, control, outcome))
+        }
+
+    def accepts(self, entry):
+        if not any(self.components.values()):
+            return True
+        from pylatexenc.latex2text import LatexNodes2Text
+        decoder = LatexNodes2Text()
+        fields = [decoder.latex_to_text(entry.get(field, '')).casefold()
+                  for field in ('title', 'abstract', 'keywords')]
+        return all(any(term in text for term in terms for text in fields)
+                   for terms in self.components.values() if terms)
 
 
 def filter_entries(entries, criteria):
@@ -79,6 +106,7 @@ def main(argv=None):
     parser.add_argument('--exclude-type', nargs='+', action='extend', type=entry_type_name,
                         default=[], metavar='TYPE', help='Exclude these types; overrides inclusion; may be repeated.')
     parser.add_argument('--log-file', type=Path, default=Path('filter_bibtex.log'))
+    add_pico_arguments(parser)
     args = parser.parse_args(argv)
     logger = logging.Logger('filter_bibtex')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
@@ -98,8 +126,9 @@ def main(argv=None):
     log.setFormatter(formatter)
     logger.addHandler(log)
     try:
-        criterion = EntryTypeCriterion(args.include_type, args.exclude_type)
-        total, kept = filter_file(args.input, args.output, [criterion], logger)
+        criteria = [EntryTypeCriterion(args.include_type, args.exclude_type),
+                    PicoCriterion(args.population, args.intervention, args.control, args.outcome)]
+        total, kept = filter_file(args.input, args.output, criteria, logger)
         print('Read %d entries; kept %d; excluded %d. BibTeX: %s' %
               (total, kept, total - kept, args.output))
         return 0
