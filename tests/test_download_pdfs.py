@@ -199,7 +199,7 @@ class PdfDownloadTests(unittest.TestCase):
                               ('https://a.test/2', 30)])
             self.assertTrue(all(Path(j.entry['file']).read_bytes() == PDF for j in jobs))
 
-    def test_http_failure_queues_rate_limited_browser_fallback(self):
+    def test_http_failure_starts_browser_fallback_without_waiting(self):
         for response in (Response(status=403), Response(status=202),
                          Response(b'<html>No PDF here</html>'),
                          Response(b'%PDF-1.4\ntruncated'), OSError('Connection failed')):
@@ -214,7 +214,7 @@ class PdfDownloadTests(unittest.TestCase):
                 self.assertEqual(download_queue([job], session, HostRateLimiter(clock=clock),
                                                self.logger, browser_fallback=browser,
                                                sleep=clock.sleep), (1, 0))
-                self.assertEqual(starts, [('https://pub.test/paper', 30)])
+                self.assertEqual(starts, [('https://pub.test/paper', 0)])
                 self.assertEqual(len(session.calls), 1)
                 self.assertEqual(Path(job.entry['file']).read_bytes(), PDF)
 
@@ -240,6 +240,36 @@ class PdfDownloadTests(unittest.TestCase):
                                            HostRateLimiter(), self.logger,
                                            browser_fallback=browser), (1, 0))
             browser.assert_not_called()
+
+    def test_http_retry_is_immediate_but_next_entry_still_waits(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clock = Clock()
+            first = self.job(folder, 'first', 'https://pub.test/first')
+            second = self.job(folder, 'second', 'https://pub.test/second')
+            session = Session({'https://pub.test/first': [Response(status=500), Response(PDF)],
+                               'https://pub.test/second': Response(PDF)}, clock)
+            self.assertEqual(download_queue([first, second], session, HostRateLimiter(clock=clock),
+                                           self.logger, sleep=clock.sleep), (2, 0))
+            self.assertEqual([(url, when) for url, when, _ in session.calls],
+                             [('https://pub.test/first', 0), ('https://pub.test/first', 0),
+                              ('https://pub.test/second', 30)])
+
+    def test_browser_fallback_precedes_another_ready_entry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clock = Clock()
+            first = self.job(folder, 'first', 'https://a.test/first')
+            second = self.job(folder, 'second', 'https://b.test/second')
+            session = Session({'https://a.test/first': Response(status=403),
+                               'https://b.test/second': Response(PDF)}, clock)
+            calls_before_fallback = []
+            def browser(url, timeout, max_bytes):
+                calls_before_fallback.extend(session.calls)
+                return PDF
+            self.assertEqual(download_queue([first, second], session, HostRateLimiter(clock=clock),
+                                           self.logger, sleep=clock.sleep,
+                                           browser_fallback=browser), (2, 0))
+            self.assertEqual(len(calls_before_fallback), 1)
+            self.assertEqual(clock(), 0)
 
     def test_redirect_and_discovery_requests_are_rate_limited(self):
         with tempfile.TemporaryDirectory() as folder:

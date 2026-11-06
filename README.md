@@ -72,8 +72,9 @@ responses or landing pages without PDF links), that URL is queued for one browse
 attempt. Transient HTTP status retries are exhausted first. The fallback opens
 the same URL in the dedicated browser, allowing normal redirects and inspecting
 rendered PDF metadata/links. Those discovered links are retrieved in the browser,
-without switching back to HTTP. Each fallback attempt and explicit PDF navigation
-obeys the shared hostname rate limiter. Browser-managed subresources and automatic
+without switching back to HTTP. Failed attempts for the same entry are retried
+immediately, including HTTP retries, alternative candidate URLs, and browser
+fallback. Server-provided `Retry-After` delays are still honored. Browser-managed subresources and automatic
 redirect hops are not individually paced. Failed fallbacks are logged and remaining
 candidate URLs are tried; there is no endless HTTP/browser retry loop.
 Install `requirements-browser.txt` and Playwright Chromium for this fallback too.
@@ -82,9 +83,10 @@ subscription may still fail and is logged. This script does not guarantee that e
 paper has an accessible PDF.
 
 Downloads are paced **per hostname**, with a default limit of **2 requests per
-minute** (30 seconds between request starts). This includes landing pages,
-redirect hops, failed requests, and retries, so PDF downloads cannot exceed the
-configured rate. Different servers have independent limits; the queue processes
+minute** (30 seconds between request starts), except that retries following a
+failure for the same entry bypass this interval. Each retry updates the cooldown
+for the next entry. Landing pages, redirects, and successful discovery steps use
+normal pacing. Different servers have independent limits; the queue processes
 ready jobs while another server is cooling down. Limits apply to one script
 process, not across multiple concurrent runs. To change the rate:
 

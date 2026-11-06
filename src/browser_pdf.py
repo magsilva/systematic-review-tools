@@ -65,8 +65,9 @@ class BrowserPdfDownloader:
                 if target in visited or urlsplit(target).scheme not in ('http', 'https'):
                     continue
                 if visited and limiter is not None:
-                    while limiter.delay(target):
-                        time.sleep(min(limiter.delay(target), 60))
+                    delay = limiter.retry_delay if last_error is not None else limiter.delay
+                    while delay(target):
+                        time.sleep(min(delay(target), 60))
                     limiter.started(target)
                 visited.add(target)
                 downloads.clear()
@@ -118,6 +119,7 @@ class BrowserPdfDownloader:
                     if not links:
                         raise ValueError('Browser page advertises no PDF link.')
                     pending.extend(urljoin(page.url, link) for link in links[:10])
+                    last_error = None
                 except Exception as error:
                     last_error = error
             raise ValueError('Browser could not retrieve a PDF: %s' %

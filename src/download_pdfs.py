@@ -98,12 +98,16 @@ class HostRateLimiter:
         self.interval = 60 / rate
         self.clock = clock
         self.next_allowed = {}
+        self.server_backoff = {}
 
     def host(self, url):
         return urlsplit(url).hostname.casefold()
 
     def delay(self, url):
-        return max(0, self.next_allowed.get(self.host(url), 0) - self.clock())
+        return max(self.retry_delay(url), self.next_allowed.get(self.host(url), 0) - self.clock())
+
+    def retry_delay(self, url):
+        return max(0, self.server_backoff.get(self.host(url), 0) - self.clock())
 
     def started(self, url):
         self.next_allowed[self.host(url)] = self.clock() + self.interval
@@ -111,6 +115,7 @@ class HostRateLimiter:
     def defer(self, url, seconds):
         host = self.host(url)
         self.next_allowed[host] = max(self.next_allowed.get(host, 0), self.clock() + seconds)
+        self.server_backoff[host] = max(self.server_backoff.get(host, 0), self.clock() + seconds)
 
 
 @dataclass
@@ -122,6 +127,7 @@ class DownloadJob:
     retries: dict = field(default_factory=dict)
     requests: int = 0
     browser_urls: set = field(default_factory=set)
+    immediate_retry: bool = False
 
 
 def pdf_filename(entry):
@@ -182,10 +188,15 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
     """Process one HTTP request per queue turn; redirects share the same limiter."""
     pending = list(jobs)
     downloaded, failed = 0, 0
+    def delay_for(job):
+        if not job.urls:
+            return -1
+        delay = (limiter.retry_delay(job.urls[0]) if job.immediate_retry
+                 else limiter.delay(job.urls[0]))
+        return -2 if job.immediate_retry and delay == 0 else delay
     while pending:
         # Rotate jobs after each request so other servers can run during cooldowns.
-        position = min(range(len(pending)),
-                       key=lambda n: limiter.delay(pending[n].urls[0]) if pending[n].urls else -1)
+        position = min(range(len(pending)), key=lambda n: delay_for(pending[n]))
         job = pending.pop(position)
         if not job.urls or job.requests >= 20:
             logger.error('No PDF downloaded for %s: no usable PDF link or request limit reached',
@@ -197,7 +208,7 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
         if url in job.visited:
             pending.append(job)
             continue
-        delay = limiter.delay(url)
+        delay = limiter.retry_delay(url) if job.immediate_retry else limiter.delay(url)
         if delay:
             job.urls.appendleft(url)
             pending.append(job)
@@ -205,6 +216,7 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
             continue
         job.visited.add(url)
         job.requests += 1
+        job.immediate_retry = False
         limiter.started(url)
         success = False
         using_browser = is_acm_entry(job.entry) or url in job.browser_urls
@@ -220,17 +232,18 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                 logger.info('Saved through browser: %s', job.destination)
                 continue
             with session.get(url, stream=True, allow_redirects=False, timeout=timeout) as response:
-                if response.status_code in (429, 503):
-                    limiter.defer(url, retry_after(response.headers.get('Retry-After', '60')))
+                if response.status_code in (429, 503) and response.headers.get('Retry-After'):
+                    limiter.defer(url, retry_after(response.headers['Retry-After']))
                 if response.status_code in (429, 500, 502, 503, 504):
                     attempts = job.retries.get(url, 0)
                     if attempts < max_retries:
                         job.retries[url] = attempts + 1
                         job.visited.remove(url)
                         job.urls.appendleft(url)
+                        job.immediate_retry = True
                         logger.warning('HTTP %s for %s; queued retry %d',
                                        response.status_code, job.entry['ID'], attempts + 1)
-                        pending.append(job)
+                        pending.insert(0, job)
                         continue
                 response.raise_for_status()
                 if response.status_code in (301, 302, 303, 307, 308):
@@ -265,6 +278,7 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
                             raise ValueError('Response is not a PDF and advertises no PDF link.')
         except Exception as error:
             logger.error('Download failed for %s at %s: %s', job.entry['ID'], url, error)
+            job.immediate_retry = True
             if not using_browser and browser_fallback is not None and url not in job.browser_urls:
                 job.browser_urls.add(url)
                 job.visited.discard(url)
@@ -275,7 +289,10 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30, max_bytes=100*
             downloaded += 1
             logger.info('Saved %s', job.destination)
         else:
-            pending.append(job)
+            if job.immediate_retry:
+                pending.insert(0, job)
+            else:
+                pending.append(job)
     return downloaded, failed
 
 
