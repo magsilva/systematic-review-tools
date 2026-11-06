@@ -15,6 +15,54 @@ converts them to and from v2 `Library`, `Entry`, and `Field` objects. Invalid
 blocks are rejected with the input filename and a one-based line number.
 
 
+## Search, filter, and download from the main application
+
+`src/main.py` supports an optional pipeline after a Scopus search or ACM import.
+Use `--include-type` and/or `--exclude-type` for paper types, `--filter-pico`
+to require the supplied PICO terms in title/abstract/keywords, and
+`--download-pdfs` to download only the retained entries:
+
+```sh
+.venv/bin/python src/main.py --engine scopus \
+  --population autism ADHD neuroinclusive \
+  --intervention "software engineering" "software engineer" \
+  --include-type article inproceedings incollection book \
+  --filter-pico --download-pdfs --pdf-dir pdfs --output papers-with-files.bib
+```
+
+To process an existing bibliography without a search, replace `--engine` with
+`--input`:
+
+```sh
+.venv/bin/python src/main.py --input neurodivergent-sw-eng.bib \
+  --population autism ADHD neuroinclusive \
+  --intervention "software engineering" "software engineer" \
+  --include-type article inproceedings incollection book \
+  --filter-pico --download-pdfs --exclude-source ACM \
+  --pdf-dir pdfs --output selected-with-files.bib
+```
+
+These examples use abbreviated keyword lists; supply all desired terms as in
+`pico_search.py`. PICO arguments build the search expression; they also filter
+metadata when `--filter-pico` is supplied. Filtering and downloading are optional,
+so existing search-only commands retain their behavior. With `--input`, keywords
+are optional unless `--filter-pico` is enabled. No default type restriction is
+applied. Input and output files must differ in input-file mode.
+
+Download controls include `--source`, `--exclude-source`, `--rate-limit` (default
+2 requests per minute per hostname), `--timeout`, `--max-retries`,
+`--browser-profile`, `--show-browser`, and `--no-progress`. The default PDF
+directory is `pdfs`. Install the search engine requirements and
+`requirements-browser.txt` and Chromium as described in the PDF-download section
+when enabling PDF downloads.
+
+The final output contains retained entries and their downloaded `file` fields.
+Search/filter intermediates are temporary. Search or filtering failures preserve
+an existing destination; the downloader saves progress even when some downloads
+fail and returns a nonzero status. All stages use `--log-file` (default
+`<engine>_search.log`, or `review_pipeline.log` with `--input`). ACM processing
+continues only after a BibTeX export has actually been imported.
+
 ## Set operations on BibTeX files
 
 Use `src/bibtex_sets.py` with two or more input files:
