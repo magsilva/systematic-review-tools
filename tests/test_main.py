@@ -43,7 +43,7 @@ class ApplicationTests(unittest.TestCase):
             self.assertIn('API failed', log.read_text())
 
     def test_invalid_inputs_never_search(self):
-        for options in (['--engine', 'acm', '--population', 'adults'],
+        for options in (['--engine', 'unknown', '--population', 'adults'],
                         ['--engine', 'scopus'],
                         ['--engine', 'scopus', '--population', ' ']):
             with self.subTest(options=options), patch('scopus_search.main') as runner, \

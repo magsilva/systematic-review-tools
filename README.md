@@ -16,7 +16,8 @@ python3 src/main.py --engine scopus \
 Install and configure pybliometrics as described below before searching.
 The application accepts the same PICO keyword options as `pico_search.py`,
 including repeated options and quoted phrases. Only `scopus` is currently
-supported. It selects the Scopus API query syntax automatically and delegates
+supported for API retrieval; ACM supports the browser-assisted workflow below.
+For Scopus, it selects the API query syntax automatically and delegates
 retrieval, BibTeX export, and error logging to `scopus_search.py`.
 The `--config-path`, `--refresh`, and `--non-subscriber` options are also
 available. Exit status is 0 on success, 1 on search/export failure, and 2 for
@@ -27,6 +28,61 @@ To support another engine, add an adapter to `SEARCH_ENGINES` in `src/main.py`.
 Each adapter receives parsed options and PICO keyword sequences, generates
 the engine's expression with `pico_search`, invokes its search runner, and
 returns its exit status.
+
+### ACM browser-assisted search
+
+Install the BibTeX import dependency:
+
+```sh
+.venv/bin/python -m pip install -r requirements-acm.txt
+```
+
+Generate the canonical query and open ACM in your default browser:
+
+```sh
+.venv/bin/python src/main.py --engine acm \
+  --population "software engineering" --intervention autism \
+  --output acm_papers.bib
+```
+
+In the browser, verify that ACM interpreted the query and check the result count.
+Sign in if needed. Use **Export Citations**, select **All results** if available,
+choose **BibTeX**, and download the export. Enter the downloaded file's path at
+the console prompt. If ACM requires batches, combine the exported BibTeX files
+before importing. This workflow relies on ACM's web search interface, whose URL
+and query interpretation can change; the printed canonical query can also be
+pasted into ACM manually.
+
+For a remote/headless console, use `--no-browser` and open the printed URL on
+your own computer. Non-interactive runs print instructions without waiting.
+To finish later, repeat the keyword arguments with the downloaded export:
+
+```sh
+.venv/bin/python src/main.py --engine acm \
+  --population "software engineering" --intervention autism \
+  --output acm_papers.bib --import-bibtex /path/to/download.bib
+```
+
+The standalone runner accepts canonical expressions through `--query` or
+`--query-file`:
+
+```sh
+.venv/bin/python src/acm_search.py --query-file query.txt \
+  --output acm_papers.bib --no-browser
+```
+
+ACM errors are recorded in `acm_search.log` and stderr (override with
+`--log-file`). A successful preparation exits 0 but explicitly reports that
+no papers have been imported; a successful import reports the parsed record
+count. Invalid imports exit 1 and preserve existing output. Imports must be
+UTF-8 BibTeX with titled entries and no unparsed text/comments. Exported fields
+are retained without conversion. Validation cannot establish that an export
+matches the query or contains every result; verify those details in ACM.
+
+No dltHub dependency or ACM API credentials are needed: the
+[dltHub ACM example](https://dlthub.com/context/source/acm-digital-library)
+contains a placeholder endpoint, rather than a working search API. Browser
+login, query review, and citation export remain manual steps.
 
 ## Scopus search and BibTeX export
 
