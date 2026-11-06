@@ -15,6 +15,44 @@ converts them to and from v2 `Library`, `Entry`, and `Field` objects. Invalid
 blocks are rejected with the input filename and a one-based line number.
 
 
+## Set operations on BibTeX files
+
+Use `src/bibtex_sets.py` with two or more input files:
+
+```sh
+.venv/bin/python src/bibtex_sets.py union first.bib second.bib -o union.bib
+.venv/bin/python src/bibtex_sets.py intersection first.bib second.bib -o shared.bib
+.venv/bin/python src/bibtex_sets.py difference first.bib second.bib -o only-first.bib
+.venv/bin/python src/bibtex_sets.py symmetric-difference first.bib second.bib -o exclusive.bib
+```
+
+`merge` is an alias for `union`. Intersection requires membership in every input;
+difference subtracts all later inputs from the first. Symmetric difference keeps
+publications appearing in an odd number of input files. Duplicates within one
+file count once for membership.
+
+Two populated DOI fields take priority: equal normalized DOIs match, and distinct
+DOIs never match. DOI prefixes, URL encoding, and letter case are normalized.
+If either record lacks a DOI, matching requires nonempty, equal titles and author
+fields. When both abstracts are present, they must also match. Text comparison
+decodes TeX, normalizes Unicode, and ignores case and whitespace differences.
+Author order and name formatting remain significant; citation keys alone never
+identify publications. This is conservative matching, without fuzzy similarity.
+
+Every record in a duplicate group must match an incoming record, preventing a
+record with missing identifiers or abstracts from bridging conflicting records.
+If it fits multiple groups, the first compatible group wins. Output follows
+first appearance; missing metadata is filled from duplicates, source fields are
+combined, and conflicting values keep the first nonempty value with a warning.
+Citation-key collisions are renamed and crossref/xref references are remapped;
+references to excluded records generate warnings. Input metadata is not modified.
+
+Output must differ from every input and is written atomically using
+`bibtexparser==2.1.0`. Preambles from the inputs are retained. Errors are printed
+to stderr and `bibtex_sets.log` (override with `--log-file`), including source line
+numbers for parsing failures. Exit status is 0 on success and 1 on failure.
+Python callers can use `same_publication`, `set_entries`, or `set_files`.
+
 ## Filter BibTeX entries by criteria
 
 Install `requirements-bibtex.txt` if needed, then include only selected types:
