@@ -63,6 +63,39 @@ fail and returns a nonzero status. All stages use `--log-file` (default
 `<engine>_search.log`, or `review_pipeline.log` with `--input`). ACM processing
 continues only after a BibTeX export has actually been imported.
 
+## Extract cited papers
+
+Use the [Crossref REST API](https://www.crossref.org/documentation/retrieve-metadata/rest-api/)
+to export the direct references of papers in a bibliography:
+
+```sh
+.venv/bin/python -m pip install -r requirements-references.txt
+.venv/bin/python src/extract_references.py systematic-search-filtered.bib \
+  --output cited-papers.bib --mailto reviewer@example.org
+```
+
+`--mailto` is optional; use your own address for Crossref's polite pool. The
+script looks up each input paper by DOI or DOI resolver URL. When no DOI is
+available, it searches by bibliographic metadata and accepts a single
+corroborated candidate from the returned results. It enriches deposited citations
+by DOI or bibliographic lookup. Authors, title, journal or booktitle, DOI, year,
+abstract, and keywords are written when available. Crossref subject labels are
+used when keywords are absent.
+
+Each output entry's `source` contains the citing papers' DOIs (or BibTeX keys
+when unavailable), separated by semicolons. Duplicate DOIs and identical
+unresolved citations combine their sources. Unmatched citations are retained
+with their deposited details; raw citation text is stored in `note` when
+available. Only deposited reference lists are covered: a missing list does not
+mean that the paper has no references. The script does not access full text.
+
+Requests are sequential and cached only during the run. Use `--interval`
+(default 0.5 seconds) and `--timeout` (default 30 seconds) to tune API access.
+Warnings and errors go to stderr and `extract_references.log` (or `--log-file`).
+Request failures produce a nonzero exit status and any available partial results;
+if requests fail and no references are recovered, an existing output is
+preserved. Input and output must differ. Output is written atomically.
+
 ## Set operations on BibTeX files
 
 Use `src/bibtex_sets.py` with two or more input files:

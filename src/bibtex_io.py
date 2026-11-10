@@ -7,6 +7,16 @@ import re
 import tempfile
 
 
+def escape_bibtex(value):
+    """Escape literal metadata for a braced BibTeX field, preserving Unicode."""
+    replacements = {
+        '\\': r'\textbackslash{}', '{': r'\textbraceleft{}', '}': r'\textbraceright{}',
+        '&': r'\&', '%': r'\%', '$': r'\$', '#': r'\#',
+        '_': r'\_', '~': r'\textasciitilde{}', '^': r'\textasciicircum{}',
+    }
+    return ''.join(replacements.get(char, char) for char in str(value))
+
+
 def balance_literal_braces(content):
     """Represent escaped literal braces with balanced TeX commands before parsing."""
     def replace(match):

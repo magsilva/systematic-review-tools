@@ -1,0 +1,2 @@
+-r requirements-bibtex.txt
+requests>=2.31,<3
