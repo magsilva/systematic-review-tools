@@ -68,7 +68,7 @@ class ReferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             source, output, log = [Path(folder) / name for name in ('in.bib', 'out.bib', 'log')]
             source.write_text('@article{parent, doi={10.1234/parent}}')
-            args = [str(source), '-o', str(output), '--log-file', str(log), '--no-scholar']
+            args = [str(source), '-o', str(output), '--log-file', str(log), '--no-scholar', '--no-openalex']
             with patch('extract_references.Crossref') as api, contextlib.redirect_stdout(io.StringIO()):
                 api.return_value.work.side_effect = [{'reference': [{'DOI': '10.1234/a'}]}, work('10.1234/a')]
                 self.assertEqual(main(args), 0)
@@ -174,3 +174,40 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(scholar.find(title='A cited paper', author='Doe', year='2020')['ID'], 'a')
         cite.click.assert_called_once()
         page.request.get.assert_called_once()
+
+    def test_openalex_fills_gaps_and_scholar_only_runs_after_both_miss(self):
+        crossref, alex, scholar = Mock(), Mock(), Mock()
+        crossref.work.side_effect = [
+            {'reference': [{'DOI': '10.1234/sparse'}, {'DOI': '10.1234/alex'}, {'DOI': '10.1234/missing'}]},
+            work('10.1234/sparse'), None, None,
+        ]
+        alex.find.side_effect = [
+            {'id': 'https://openalex.org/W1', 'display_name': 'Different title',
+             'abstract_inverted_index': {'Abstract': [0]}, 'keywords': [{'display_name': 'Topic'}]},
+            {'id': 'https://openalex.org/W2', 'display_name': 'OpenAlex match'},
+            None,
+        ]
+        scholar.find.return_value = None
+        logger = logging.getLogger('openalex-fallback-test')
+        with self.assertLogs(logger, level='WARNING'):
+            records, stats = extract([{'ID': 'parent', 'doi': '10.1234/parent'}],
+                                     crossref, logger, scholar, alex)
+        self.assertEqual(records[0]['title'], 'A cited paper')
+        self.assertEqual(records[0]['abstract'], 'Abstract')
+        self.assertEqual(records[0]['keywords'], 'Topic')
+        self.assertEqual(records[1]['title'], 'OpenAlex match')
+        self.assertEqual(stats['openalex_matches'], 2)
+        scholar.find.assert_called_once_with(doi='10.1234/missing', title='', author='', year='', citation='')
+
+    def test_openalex_reference_list_when_crossref_list_is_missing(self):
+        crossref, alex, scholar = Mock(), Mock(), Mock()
+        crossref.work.side_effect = [work('10.1234/parent'), None]
+        alex.find.return_value = {'referenced_works': ['https://openalex.org/W1']}
+        alex.work.return_value = {'id': 'https://openalex.org/W1', 'doi': 'https://doi.org/10.1234/ref',
+                                  'display_name': 'OpenAlex reference'}
+        records, stats = extract([{'ID': 'parent', 'doi': '10.1234/parent'}],
+                                 crossref, logging.getLogger('openalex-fallback-test'), scholar, alex)
+        self.assertEqual(records[0]['doi'], '10.1234/ref')
+        self.assertEqual(records[0]['source'], '10.1234/parent')
+        self.assertEqual(stats['parents_without_references'], 0)
+        scholar.find.assert_not_called()

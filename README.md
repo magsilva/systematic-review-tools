@@ -89,8 +89,14 @@ with their deposited details; raw citation text is stored in `note` when
 available. Only deposited reference lists are covered: a missing list does not
 mean that the paper has no references. The script does not access full text.
 
-When Crossref cannot identify an input paper or cited work, the extractor
-searches Google Scholar with Playwright and Camoufox. Install
+OpenAlex fills missing fields in Crossref citations and looks up works that
+Crossref could not identify. Crossref metadata takes priority. If Crossref
+has no reference list for an input paper, the extractor tries OpenAlex's
+indexed references. It uses `OPENALEX_API_KEY` when set. Use `--no-openalex`
+to disable this fallback.
+
+When Crossref and OpenAlex complete their lookups without identifying a work,
+the extractor searches Google Scholar with Playwright and Camoufox. Install
 `requirements-browser.txt` and run `.venv/bin/python -m camoufox fetch` to
 enable browser lookups. The script checks up to five results and validates a
 matching BibTeX citation before using it. It stops automated Scholar lookups
