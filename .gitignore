@@ -130,3 +130,6 @@ dmypy.json
 
 # Isolated PDF download browser profile (cookies and login state)
 .pdf-browser/
+
+# Local study screening API credentials
+settings.local.ini

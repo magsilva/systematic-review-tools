@@ -3,16 +3,23 @@
 
 import argparse
 from collections import Counter
+from configparser import ConfigParser, Error as ConfigError
 import json
 import os
 from pathlib import Path
 import re
 import sys
+from urllib.parse import quote
 
 import requests
 
 from bibtex_io import escape_bibtex, read_bibtex, write_bibtex
 
+PROVIDERS = {
+    'openai': ('OPENAI_API_KEY', 'OPENAI_MODEL'),
+    'gemini': ('GEMINI_API_KEY', 'GEMINI_MODEL'),
+    'anthropic': ('ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL'),
+}
 SCALE = {
     1: 'Strongly disagree', 2: 'Disagree', 3: 'Somewhat disagree',
     4: 'Neutral', 5: 'Somewhat agree', 6: 'Agree', 7: 'Strongly agree',
@@ -30,7 +37,7 @@ RATING_SCHEMA = {
     'type': 'object',
     'properties': {
         'id': {'type': 'string'},
-        'score': {'type': 'integer', 'enum': list(SCALE)},
+        'score': {'type': 'integer', 'description': 'A Likert score from 1 through 7.'},
         'assessable': {'type': 'boolean'},
         'reason': {'type': 'string'},
     },
@@ -87,29 +94,58 @@ def decide(ratings):
     return 'probably excluded'
 
 
-def evaluate(session, model, study, criteria):
-    payload = {'study': study, 'criteria': criteria, 'scale': SCALE}
-    with session.post('https://api.openai.com/v1/responses', timeout=90, json={
-        'model': model, 'instructions': INSTRUCTIONS, 'input': json.dumps(payload, ensure_ascii=False),
-        'store': False,
+def provider_request(provider, model, prompt):
+    schema = {
+        'type': 'object',
+        'properties': {'ratings': {'type': 'array', 'items': RATING_SCHEMA}},
+        'required': ['ratings'], 'additionalProperties': False,
+    }
+    if provider == 'gemini':
+        model_id = quote(model.removeprefix('models/'), safe='')
+        return f'https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent', {
+            'systemInstruction': {'parts': [{'text': INSTRUCTIONS}]},
+            'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+            'generationConfig': {'responseMimeType': 'application/json', 'responseJsonSchema': schema},
+        }
+    if provider == 'anthropic':
+        return 'https://api.anthropic.com/v1/messages', {
+            'model': model, 'system': INSTRUCTIONS, 'max_tokens': 8192,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'output_config': {'format': {'type': 'json_schema', 'schema': schema}},
+        }
+    return 'https://api.openai.com/v1/responses', {
+        'model': model, 'instructions': INSTRUCTIONS, 'input': prompt, 'store': False,
         'text': {'format': {
-            'type': 'json_schema', 'name': 'study_screening', 'strict': True,
-            'schema': {
-                'type': 'object',
-                'properties': {'ratings': {'type': 'array', 'items': RATING_SCHEMA}},
-                'required': ['ratings'], 'additionalProperties': False,
-            },
+            'type': 'json_schema', 'name': 'study_screening', 'strict': True, 'schema': schema,
         }},
-    }) as response:
+    }
+
+
+def provider_output(provider, result):
+    if provider == 'gemini':
+        candidates = result.get('candidates') or []
+        if candidates and candidates[0].get('finishReason') == 'STOP':
+            parts = candidates[0].get('content', {}).get('parts', [])
+            return ''.join(part.get('text', '') for part in parts if not part.get('thought'))
+    elif provider == 'anthropic':
+        if result.get('stop_reason') == 'end_turn':
+            return ''.join(part['text'] for part in result.get('content', []) if part['type'] == 'text')
+    elif result.get('status') == 'completed':
+        return ''.join(part['text'] for item in result.get('output', []) if item['type'] == 'message'
+                       for part in item.get('content', []) if part['type'] == 'output_text')
+    raise ValueError(f'{provider} did not complete the response.')
+
+
+def evaluate(session, model, study, criteria, *, provider='openai'):
+    prompt = json.dumps({'study': study, 'criteria': criteria, 'scale': SCALE}, ensure_ascii=False)
+    url, payload = provider_request(provider, model, prompt)
+    with session.post(url, timeout=90, json=payload, allow_redirects=False) as response:
         response.raise_for_status()
         result = response.json()
-    if result.get('status') != 'completed':
-        raise ValueError('The evaluator did not complete the response.')
-    output = [part['text'] for item in result.get('output', []) if item['type'] == 'message'
-              for part in item.get('content', []) if part['type'] == 'output_text']
+    output = provider_output(provider, result)
     if not output:
-        raise ValueError('The evaluator returned no ratings.')
-    return validate_ratings(json.loads(''.join(output))['ratings'], criteria)
+        raise ValueError(f'{provider} returned no ratings.')
+    return validate_ratings(json.loads(output)['ratings'], criteria)
 
 
 def screen(database, criteria, evaluator):
@@ -141,24 +177,52 @@ def main(argv=None):
     parser.add_argument('input', type=Path)
     parser.add_argument('--criteria', required=True, type=Path)
     parser.add_argument('-o', '--output', required=True, type=Path)
-    parser.add_argument('--model', default=os.environ.get('OPENAI_MODEL'),
-                        help='OpenAI model supporting Structured Outputs. Defaults to OPENAI_MODEL.')
+    parser.add_argument('--provider', choices=PROVIDERS, default='openai',
+                        help='AI API provider (default: openai).')
+    parser.add_argument('--model', help='Model supporting structured JSON output.')
+    parser.add_argument('--config', type=Path, help='INI file with provider API keys and models.')
+
     args = parser.parse_args(argv)
-    for source in (args.input, args.criteria):
+    key_var, model_var = PROVIDERS[args.provider]
+    for source in (args.input, args.criteria, args.config):
+        if source is None:
+            continue
         if (args.output.resolve() == source.resolve()
                 or (args.output.exists() and source.exists() and args.output.samefile(source))):
-            parser.error('Output must differ from both input files.')
+            parser.error('Output must differ from all input and configuration files.')
     try:
+        config = ConfigParser(interpolation=None)
+        if args.config is not None:
+            try:
+                with args.config.open(encoding='utf-8-sig') as stream:
+                    config.read_file(stream)
+            except (ConfigError, UnicodeError):
+                raise ValueError(f'Invalid INI configuration in {args.config}.') from None
+            if config.defaults():
+                raise ValueError('Put API settings in provider sections, such as [openai].')
+        settings = config[args.provider] if config.has_section(args.provider) else {}
+        model = (args.model or settings.get('model') or os.environ.get(model_var, '')).strip()
         criteria = read_criteria(args.criteria)
         database = read_bibtex(args.input)
         with requests.Session() as session:
             if any(entry.get(field, '').strip() for entry in database.entries
                    for field in ('title', 'abstract', 'keywords')):
-                key = os.environ.get('OPENAI_API_KEY', '').strip()
-                if not key or not args.model:
-                    raise ValueError('Set OPENAI_API_KEY and supply --model or OPENAI_MODEL.')
-                session.headers['Authorization'] = 'Bearer ' + key
-            counts = screen(database, criteria, lambda study, rules: evaluate(session, args.model, study, rules))
+                key = (settings.get('api_key') or os.environ.get(key_var, '')).strip()
+                if not key or not model:
+                    raise ValueError(f'Provide api_key and model under [{args.provider}] in --config, '
+                                     f'or set {key_var} and supply --model or {model_var}.')
+                if args.provider == 'gemini':
+                    session.headers['x-goog-api-key'] = key
+                elif args.provider == 'anthropic':
+                    session.headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
+                    workspace = (settings.get('workspace_id')
+                                 or os.environ.get('ANTHROPIC_WORKSPACE_ID', '')).strip()
+                    if workspace:
+                        session.headers['anthropic-workspace-id'] = workspace
+                else:
+                    session.headers['Authorization'] = 'Bearer ' + key
+            counts = screen(database, criteria, lambda study, rules: evaluate(
+                session, model, study, rules, provider=args.provider))
         write_bibtex(database, args.output)
     except (OSError, ValueError, requests.RequestException) as error:
         print(f'Screening failed: {error}', file=sys.stderr)

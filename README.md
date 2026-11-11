@@ -147,17 +147,39 @@ I1: Studies neurodivergent people working in software engineering.
 E1: The publication is an editorial or an opinion piece.
 ```
 
-Install `requirements-references.txt`, set `OPENAI_API_KEY`, and supply a
-model that supports [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses)
-with `--model` or `OPENAI_MODEL`.
+Install `requirements-references.txt` and choose an API provider and a model
+that supports structured JSON output. OpenAI is the default provider.
+
+| `--provider` | API key environment variable | Model environment variable |
+| --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | `OPENAI_MODEL` |
+| `gemini` | `GEMINI_API_KEY` | `GEMINI_MODEL` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` |
+
+`--model` overrides the selected provider's model environment variable.
+For Anthropic keys that require a workspace, set `ANTHROPIC_WORKSPACE_ID`.
 
 ```sh
 .venv/bin/python src/screen_studies.py studies.bib --criteria criteria.txt \
-  --model gpt-4o-mini --output screened.bib
+  --provider gemini --model YOUR_GEMINI_MODEL --output screened.bib
 ```
 
+To store credentials in a file, copy `screening.example.ini` to
+`settings.local.ini` and fill in `api_key` and `model` under the provider you
+use. Git ignores `settings.local.ini`. Restrict access to that file because
+it contains plaintext keys.
+
+```sh
+.venv/bin/python src/screen_studies.py studies.bib --criteria criteria.txt \
+  --provider gemini --config settings.local.ini --output screened.bib
+```
+
+The selected provider's configuration takes precedence over its environment
+variables. An explicit `--model` takes precedence over both. For Anthropic,
+`workspace_id` can be set in the `[anthropic]` section.
+
 The script sends each study's title, abstract, and keywords along with the
-criteria to the OpenAI API. The output keeps every entry and adds
+criteria to the selected provider. The output keeps every entry and adds
 `screening_decision`, `screening_scores`, and `screening_reasons`. An exclusion
 score of 6 or 7 overrides any inclusion. Selection requires at least one
 inclusion score of 6 or 7 and enough evidence to assess every exclusion.
