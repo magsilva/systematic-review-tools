@@ -137,6 +137,35 @@ Coverage and missing fields depend on the OpenAlex index. Unmatched inputs or
 request errors are logged and return a nonzero exit code. Available results
 are written to a separate BibTeX file even if some lookups fail.
 
+## Screen studies against inclusion and exclusion criteria
+
+Create a UTF-8 criteria file with one criterion per line and at least one
+inclusion criterion. IDs must start with `I` or `E` and be unique.
+
+```text
+I1: Studies neurodivergent people working in software engineering.
+E1: The publication is an editorial or an opinion piece.
+```
+
+Install `requirements-references.txt`, set `OPENAI_API_KEY`, and supply a
+model that supports [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses)
+with `--model` or `OPENAI_MODEL`.
+
+```sh
+.venv/bin/python src/screen_studies.py studies.bib --criteria criteria.txt \
+  --model gpt-4o-mini --output screened.bib
+```
+
+The script sends each study's title, abstract, and keywords along with the
+criteria to the OpenAI API. The output keeps every entry and adds
+`screening_decision`, `screening_scores`, and `screening_reasons`. An exclusion
+score of 6 or 7 overrides any inclusion. Selection requires at least one
+inclusion score of 6 or 7 and enough evidence to assess every exclusion.
+If the available evidence leaves the decision unresolved, the script records
+`probably excluded`. It marks each unassessable criterion separately with
+a score of 4. An API failure or invalid response ends the run with an error
+before replacing the output.
+
 ## Set operations on BibTeX files
 
 Use `src/bibtex_sets.py` with two or more input files:
