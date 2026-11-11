@@ -13,7 +13,8 @@ from urllib.parse import quote
 
 import requests
 
-from bibtex_io import escape_bibtex, read_bibtex, write_bibtex
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
+from bibtex_io import escape_bibtex, new_database, read_bibtex, write_bibtex
 
 PROVIDERS = {
     'openai': ('OPENAI_API_KEY', 'OPENAI_MODEL'),
@@ -150,6 +151,8 @@ def evaluate(session, model, study, criteria, *, provider='openai'):
 
 def screen(database, criteria, evaluator):
     counts = Counter()
+    completed = new_database(preambles=database.preambles)
+    track_bibtex(lambda: completed)
     for entry in database.entries:
         study = {field: entry.get(field, '').strip() for field in ('title', 'abstract', 'keywords')}
         if any(study.values()):
@@ -169,9 +172,11 @@ def screen(database, criteria, evaluator):
             for r in ratings)
         entry['screening_reasons'] = escape_bibtex(' | '.join(
             f'{r["id"]}: {r["reason"]}' for r in ratings))
+        completed.entries.append(entry)
     return counts
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
@@ -191,39 +196,40 @@ def main(argv=None):
                 or (args.output.exists() and source.exists() and args.output.samefile(source))):
             parser.error('Output must differ from all input and configuration files.')
     try:
-        config = ConfigParser(interpolation=None)
-        if args.config is not None:
-            try:
-                with args.config.open(encoding='utf-8-sig') as stream:
-                    config.read_file(stream)
-            except (ConfigError, UnicodeError):
-                raise ValueError(f'Invalid INI configuration in {args.config}.') from None
-            if config.defaults():
-                raise ValueError('Put API settings in provider sections, such as [openai].')
-        settings = config[args.provider] if config.has_section(args.provider) else {}
-        model = (args.model or settings.get('model') or os.environ.get(model_var, '')).strip()
-        criteria = read_criteria(args.criteria)
-        database = read_bibtex(args.input)
-        with requests.Session() as session:
-            if any(entry.get(field, '').strip() for entry in database.entries
-                   for field in ('title', 'abstract', 'keywords')):
-                key = (settings.get('api_key') or os.environ.get(key_var, '')).strip()
-                if not key or not model:
-                    raise ValueError(f'Provide api_key and model under [{args.provider}] in --config, '
-                                     f'or set {key_var} and supply --model or {model_var}.')
-                if args.provider == 'gemini':
-                    session.headers['x-goog-api-key'] = key
-                elif args.provider == 'anthropic':
-                    session.headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
-                    workspace = (settings.get('workspace_id')
-                                 or os.environ.get('ANTHROPIC_WORKSPACE_ID', '')).strip()
-                    if workspace:
-                        session.headers['anthropic-workspace-id'] = workspace
-                else:
-                    session.headers['Authorization'] = 'Bearer ' + key
-            counts = screen(database, criteria, lambda study, rules: evaluate(
-                session, model, study, rules, provider=args.provider))
-        write_bibtex(database, args.output)
+        with bibtex_checkpoint(args.output):
+            config = ConfigParser(interpolation=None)
+            if args.config is not None:
+                try:
+                    with args.config.open(encoding='utf-8-sig') as stream:
+                        config.read_file(stream)
+                except (ConfigError, UnicodeError):
+                    raise ValueError(f'Invalid INI configuration in {args.config}.') from None
+                if config.defaults():
+                    raise ValueError('Put API settings in provider sections, such as [openai].')
+            settings = config[args.provider] if config.has_section(args.provider) else {}
+            model = (args.model or settings.get('model') or os.environ.get(model_var, '')).strip()
+            criteria = read_criteria(args.criteria)
+            database = read_bibtex(args.input)
+            with requests.Session() as session:
+                if any(entry.get(field, '').strip() for entry in database.entries
+                       for field in ('title', 'abstract', 'keywords')):
+                    key = (settings.get('api_key') or os.environ.get(key_var, '')).strip()
+                    if not key or not model:
+                        raise ValueError(f'Provide api_key and model under [{args.provider}] in --config, '
+                                         f'or set {key_var} and supply --model or {model_var}.')
+                    if args.provider == 'gemini':
+                        session.headers['x-goog-api-key'] = key
+                    elif args.provider == 'anthropic':
+                        session.headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
+                        workspace = (settings.get('workspace_id')
+                                     or os.environ.get('ANTHROPIC_WORKSPACE_ID', '')).strip()
+                        if workspace:
+                            session.headers['anthropic-workspace-id'] = workspace
+                    else:
+                        session.headers['Authorization'] = 'Bearer ' + key
+                counts = screen(database, criteria, lambda study, rules: evaluate(
+                    session, model, study, rules, provider=args.provider))
+            write_bibtex(database, args.output)
     except (OSError, ValueError, requests.RequestException) as error:
         print(f'Screening failed: {error}', file=sys.stderr)
         return 1

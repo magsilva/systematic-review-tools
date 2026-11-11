@@ -11,6 +11,7 @@ import re
 import sys
 from urllib.parse import urlencode, urljoin
 
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
 from bibtex_io import escape_bibtex, merge_sources, new_database, parse_bibtex, write_bibtex
 from browser_session import launch_context
 from merge_bibtex import merge_entries
@@ -167,26 +168,31 @@ def search_to_bibtex(query, output, *, timeout=60, headless=True, logger=None):
     if timeout <= 0:
         raise ValueError('Timeout must be positive.')
     logger = logger or logging.getLogger(__name__)
-    from playwright.sync_api import sync_playwright
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix='sol-search-') as profile, sync_playwright() as runtime:
-        context = launch_context(runtime, profile, headless=headless)
-        try:
-            page = context.new_page()
-            urls = collect_result_urls(page, query, timeout)
-            logger.info('SOL returned %d results.', len(urls))
-            entries = [extract_entry(page, url, timeout, logger) for url in urls]
-        finally:
-            context.close()
-    entries = merge_entries([entries], logger)
-    write_bibtex(new_database(entries), output)
-    return len(entries)
+    with bibtex_checkpoint(output):
+        from playwright.sync_api import sync_playwright
+        import tempfile
+        entries = []
+        track_bibtex(lambda: new_database(merge_entries([entries], logger)))
+        with tempfile.TemporaryDirectory(prefix='sol-search-') as profile, sync_playwright() as runtime:
+            context = launch_context(runtime, profile, headless=headless)
+            try:
+                page = context.new_page()
+                urls = collect_result_urls(page, query, timeout)
+                logger.info('SOL returned %d results.', len(urls))
+                entries.extend(extract_entry(page, url, timeout, logger) for url in urls)
+            finally:
+                context.close()
+        result = new_database(merge_entries([entries], logger))
+        track_bibtex(lambda: result)
+        write_bibtex(result, output)
+        return len(result.entries)
 
 
 def same_file(left, right):
     return left.resolve() == right.resolve() or (left.exists() and right.exists() and left.samefile(right))
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)

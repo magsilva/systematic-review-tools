@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sys
 
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
 from bibtex_io import escape_bibtex, new_database, serialize_bibtex, write_bibtex
 
 
@@ -60,19 +61,23 @@ def search_to_bibtex(query, output, *, refresh=False, subscriber=True, config_pa
     """Retrieve all results and atomically save them; propagate errors to caller."""
     if not query.strip():
         raise ValueError('The search query must not be empty.')
-    import pybliometrics
-    from pybliometrics.scopus import ScopusSearch
+    with bibtex_checkpoint(output):
+        import pybliometrics
+        from pybliometrics.scopus import ScopusSearch
 
-    pybliometrics.init(**({'config_path': config_path} if config_path else {}))
-    search = ScopusSearch(query, refresh=refresh, subscriber=subscriber,
-                          download=True, verbose=False)
-    records = search.results or []
-    database = new_database(record_to_entry(record, index)
-                            for index, record in enumerate(records, start=1))
-    write_bibtex(database, output)
-    return len(records)
+        pybliometrics.init(**({'config_path': config_path} if config_path else {}))
+        search = ScopusSearch(query, refresh=refresh, subscriber=subscriber,
+                              download=True, verbose=False)
+        records = search.results or []
+        database = new_database()
+        track_bibtex(lambda: database)
+        database.entries.extend(record_to_entry(record, index)
+                                for index, record in enumerate(records, start=1))
+        write_bibtex(database, output)
+        return len(records)
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)

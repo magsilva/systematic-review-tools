@@ -9,6 +9,7 @@ import sys
 import unicodedata
 from urllib.parse import unquote
 
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
 from bibtex_io import balance_literal_braces, merge_sources, new_database, read_bibtex, write_bibtex
 
 
@@ -45,7 +46,7 @@ def identity_keys(entry):
     return keys
 
 
-def merge_entries(sources, logger=None):
+def merge_entries(sources, logger=None, *, processed=None):
     """Merge entry sequences in input order; first nonempty conflicting value wins.
 
     Citation keys are not paper identifiers. Identifier conflicts prevent merging
@@ -115,6 +116,8 @@ def merge_entries(sources, logger=None):
             aliases[(source_number, key)] = number
             for identity in groups[number]['keys']:
                 index.setdefault(identity, set()).add(number)
+            if processed is not None:
+                processed[source_number].append(original)
 
     active = [n for n in range(len(groups)) if root(n) == n]
     # Reserve original keys first so suffixes cannot steal a later record's key.
@@ -152,16 +155,21 @@ def merge_files(inputs, output, logger=None):
     output = Path(output)
     if any(Path(path).resolve() == output.resolve() for path in inputs):
         raise ValueError('Output must differ from all input files.')
-    sources, preambles = [], []
-    for path in inputs:
-        database = read_bibtex(path)
-        sources.append(database.entries)
-        preambles.extend(p for p in database.preambles if p not in preambles)
-    database = new_database(merge_entries(sources, logger), preambles)
-    write_bibtex(database, output)
-    return sum(map(len, sources)), len(database.entries)
+    with bibtex_checkpoint(output):
+        sources, preambles = [], []
+        for path in inputs:
+            database = read_bibtex(path)
+            sources.append(database.entries)
+            preambles.extend(p for p in database.preambles if p not in preambles)
+        processed = [[] for _ in sources]
+        track_bibtex(lambda: new_database(merge_entries(processed, logger), preambles))
+        database = new_database(merge_entries(sources, logger, processed=processed), preambles)
+        track_bibtex(lambda: database)
+        write_bibtex(database, output)
+        return sum(map(len, sources)), len(database.entries)
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('inputs', nargs='+', type=Path, help='Input .bib files, in priority order.')

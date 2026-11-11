@@ -14,6 +14,24 @@ CSV/mapping tools. Application records remain dictionaries; the shared module
 converts them to and from v2 `Library`, `Entry`, and `Field` objects. Invalid
 blocks are rejected with the input filename and a one-based line number.
 
+## Interrupted runs
+
+Once processing starts, Ctrl+C (`SIGINT`) or `kill <pid>` (`SIGTERM`) saves
+the BibTeX results so far. `SIGHUP` and `SIGQUIT` also trigger a save where
+supported. If the requested output is `papers.bib`, the checkpoint is
+`papers-incomplete.bib`, beside the requested output. The regular output
+and any previous checkpoint are preserved; a repeat interruption uses a
+name such as `papers-2-incomplete.bib`. The command prints the checkpoint
+path and exits with status 128 plus the signal number.
+
+The checkpoint contains the records completed by the current stage. For
+example, screening saves evaluated studies, and the downloader saves entries
+whose downloads finished, were reused, were skipped, or exhausted their
+attempts. Set operations reflect only records processed so far, so a partial
+difference can include entries that a later comparison would remove. If
+interrupted before any records are processed, the checkpoint can be empty.
+`SIGKILL` (`kill -9`) cannot trigger a save.
+
 
 ## Search, filter, and download from the main application
 
@@ -494,8 +512,9 @@ error rather than being overwritten. The input file is preserved when output
 differs; passing the same path updates the BibTeX file in place atomically.
 BibTeX formatting/string macros may be rewritten, while entry metadata is
 retained. Failed entries receive no new `file` field; existing `file` fields are
-preserved. The updated bibliography is saved after the queue finishes and on
-Ctrl-C, retaining completed downloads. The output's parent directory must exist;
+preserved. The updated bibliography is saved after the queue finishes. On
+Ctrl+C, completed records go to a separate `-incomplete.bib` checkpoint.
+The output's parent directory must exist;
 the PDF directory is created automatically.
 
 Failures go to stderr and `download_pdfs.log` (override with `--log-file`).

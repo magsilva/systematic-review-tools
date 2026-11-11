@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import requests
 
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
 from bibtex_io import escape_bibtex, merge_sources, new_database, read_bibtex, write_bibtex
 from citation_metadata import doi_of, normalized
 from openalex import OpenAlex, citation_entry, configure_session, work_doi, work_id
@@ -143,6 +144,7 @@ def metadata_incomplete(entry):
 
 def extract(entries, client, logger, scholar=None, openalex=None):
     results, stats = {}, Counter()
+    track_bibtex(lambda: new_database(results.values()))
     lookup_failed = object()
 
     def attempt(operation, label, *, on_error=None):
@@ -266,9 +268,8 @@ def extract(entries, client, logger, scholar=None, openalex=None):
                 key = ('citation', tuple(sorted(entry.items())))
             else:
                 key = ('position', source, position)
-            if key not in results:
-                results[key] = dict(entry, ID='reference_%d' % (len(results) + 1))
-            stored = results[key]
+            stored = dict(results[key]) if key in results else dict(
+                entry, ID='reference_%d' % (len(results) + 1))
             for field, value in entry.items():
                 if field == 'ENTRYTYPE' and stored[field] == 'misc':
                     stored[field] = value
@@ -276,9 +277,11 @@ def extract(entries, client, logger, scholar=None, openalex=None):
                     stored.setdefault(field, value)
             stored['source'] = merge_sources(stored.get('source', ''),
                                               (scholar_entry or {}).get('source', ''), source)
+            results[key] = stored
     return list(results.values()), stats
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
@@ -316,30 +319,31 @@ def main(argv=None):
     scholar = None
     try:
         logger.addHandler(log)
-        entries = read_bibtex(args.input).entries
-        scholar = None if args.no_scholar else Scholar(
-            entries=read_bibtex(args.scholar_bibtex).entries if args.scholar_bibtex else [],
-            logger=logger, identify=doi_of, normalize=normalized,
-            online=not args.scholar_manual, timeout=args.timeout)
-        with requests.Session() as session, requests.Session() as alex_session:
-            session.headers['User-Agent'] = 'systematic-review-tools/reference-extractor'
-            alex = None
-            if not args.no_openalex:
-                configure_session(alex_session)
-                alex = OpenAlex(alex_session, timeout=args.timeout)
-            results, stats = extract(entries, Crossref(session, mailto=args.mailto,
-                                                      timeout=args.timeout, interval=args.interval),
-                                     logger, scholar, alex)
-        if entries and not results and stats['errors']:
-            raise RuntimeError('No references retrieved; preserving any existing output.')
-        write_bibtex(new_database(results), args.output)
-        print('Read %d papers; exported %d unique references from %d citations. '
-              '%d papers without reference lists; %d OpenAlex matches; %d Scholar matches; '
-              '%d unresolved citations; %d errors. BibTeX: %s'
-              % (len(entries), len(results), stats['references'], stats['parents_without_references'],
-                 stats['openalex_matches'], stats['scholar_matches'], stats['unresolved'],
-                 stats['errors'], args.output))
-        return 1 if stats['errors'] else 0
+        with bibtex_checkpoint(args.output):
+            entries = read_bibtex(args.input).entries
+            scholar = None if args.no_scholar else Scholar(
+                entries=read_bibtex(args.scholar_bibtex).entries if args.scholar_bibtex else [],
+                logger=logger, identify=doi_of, normalize=normalized,
+                online=not args.scholar_manual, timeout=args.timeout)
+            with requests.Session() as session, requests.Session() as alex_session:
+                session.headers['User-Agent'] = 'systematic-review-tools/reference-extractor'
+                alex = None
+                if not args.no_openalex:
+                    configure_session(alex_session)
+                    alex = OpenAlex(alex_session, timeout=args.timeout)
+                results, stats = extract(entries, Crossref(session, mailto=args.mailto,
+                                                          timeout=args.timeout, interval=args.interval),
+                                         logger, scholar, alex)
+            if entries and not results and stats['errors']:
+                raise RuntimeError('No references retrieved; preserving any existing output.')
+            write_bibtex(new_database(results), args.output)
+            print('Read %d papers; exported %d unique references from %d citations. '
+                  '%d papers without reference lists; %d OpenAlex matches; %d Scholar matches; '
+                  '%d unresolved citations; %d errors. BibTeX: %s'
+                  % (len(entries), len(results), stats['references'], stats['parents_without_references'],
+                     stats['openalex_matches'], stats['scholar_matches'], stats['unresolved'],
+                     stats['errors'], args.output))
+            return 1 if stats['errors'] else 0
     except Exception:
         logger.exception('Reference extraction failed')
         return 1

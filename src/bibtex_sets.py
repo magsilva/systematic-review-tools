@@ -9,6 +9,7 @@ import sys
 import unicodedata
 
 from pylatexenc.latex2text import LatexNodes2Text
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
 from bibtex_io import merge_sources, new_database, read_bibtex, write_bibtex
 from merge_bibtex import normalize_doi
 
@@ -59,7 +60,7 @@ def same_publication(left, right):
     return _equal(publication_identity(left), publication_identity(right))
 
 
-def set_entries(sources, operation, logger=None):
+def set_entries(sources, operation, logger=None, *, processed=None):
     """Return deduplicated records in first-appearance order.
 
     Difference means first input minus every later input. Symmetric difference
@@ -112,6 +113,8 @@ def set_entries(sources, operation, logger=None):
             aliases[alias] = number
             for key in keys:
                 index.setdefault(key, set()).add(number)
+            if processed is not None:
+                processed[source].append(entry)
     def keep(group):
         members = group['sources']
         return (operation == 'union'
@@ -151,13 +154,19 @@ def set_files(inputs, output, operation, logger=None):
     if any(path.resolve() == output.resolve()
            or (output.exists() and path.samefile(output)) for path in inputs):
         raise ValueError('Output must differ from all input files.')
-    databases = [read_bibtex(path) for path in inputs]
-    entries = set_entries([db.entries for db in databases], operation, logger)
-    preambles = list(dict.fromkeys(p for db in databases for p in db.preambles))
-    write_bibtex(new_database(entries, preambles), output)
-    return sum(len(db.entries) for db in databases), len(entries)
+    with bibtex_checkpoint(output):
+        databases = [read_bibtex(path) for path in inputs]
+        preambles = list(dict.fromkeys(p for db in databases for p in db.preambles))
+        processed = [[] for _ in databases]
+        track_bibtex(lambda: new_database(set_entries(processed, operation, logger), preambles))
+        entries = set_entries([db.entries for db in databases], operation, logger, processed=processed)
+        result = new_database(entries, preambles)
+        track_bibtex(lambda: result)
+        write_bibtex(result, output)
+        return sum(len(db.entries) for db in databases), len(entries)
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['union', 'merge', 'intersection', 'difference', 'symmetric-difference'])

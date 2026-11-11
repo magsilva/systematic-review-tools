@@ -19,7 +19,8 @@ import tempfile
 import time
 from urllib.parse import quote, urljoin, urlsplit
 
-from bibtex_io import read_bibtex, write_bibtex
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
+from bibtex_io import new_database, read_bibtex, write_bibtex
 from paper_discovery import (PdfVerificationError, discovery_url, rank_candidates, verify_pdf)
 
 
@@ -329,20 +330,17 @@ def handle_attempt_failure(job, url, error, using_browser, browser_fallback, log
         logger.info('Queued browser fallback for %s at %s', job.entry['ID'], url)
 
 
-def record_download(job, url, logger, progress=None):
+def record_download(job, url):
     if job.active_candidate is not None:
         if job.active_candidate['doi']:
             job.entry['doi'] = job.active_candidate['doi']
         job.entry['url'] = url
     job.entry['file'] = str(job.destination.resolve())
-    if progress is not None:
-        progress.finished(True)
-    logger.info('Saved %s', job.destination)
 
 
 def download_queue(jobs, session, limiter, logger, *, timeout=30,
                    max_retries=2, sleep=time.sleep, browser_download=None,
-                   browser_fallback=None, progress=None):
+                   browser_fallback=None, progress=None, completed=None):
     """Schedule rate-limited attempts and dispatch HTTP/browser download strategies."""
     pending = list(jobs)
     downloaded, failed = 0, 0
@@ -361,6 +359,8 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30,
         if not job.urls or job.requests >= 20:
             logger.error('No PDF downloaded for %s: no usable PDF link or request limit reached', job.entry['ID'])
             failed += 1
+            if completed is not None:
+                completed.add(job.entry['ID'])
             if progress is not None:
                 progress.finished(False)
             continue
@@ -398,7 +398,12 @@ def download_queue(jobs, session, limiter, logger, *, timeout=30,
             handle_attempt_failure(job, url, error, using_browser, browser_fallback, logger, progress)
             result = AttemptResult()
         if result.downloaded_url is not None:
-            record_download(job, result.downloaded_url, logger, progress)
+            record_download(job, result.downloaded_url)
+            if completed is not None:
+                completed.add(job.entry['ID'])
+            if progress is not None:
+                progress.finished(True)
+            logger.info('Saved %s', job.destination)
             downloaded += 1
         elif result.retry or job.immediate_retry:
             pending.insert(0, job)
@@ -414,74 +419,82 @@ def download_bibtex(source, output, directory, logger, *, rate=2, timeout=30,
                     browser_headless=True, show_progress=False):
     import requests
     source, output, directory = Path(source), Path(output), Path(directory)
-    database = read_bibtex(source)
-    limiter = HostRateLimiter(rate)
-    directory.mkdir(parents=True, exist_ok=True)
-    seen, jobs = set(), []
-    resumed, skipped = 0, 0
-    selected_sources = ({name.strip().casefold() for name in sources if name.strip()}
-                        if sources is not None else None)
-    excluded_sources = {name.strip().casefold() for name in (exclude_sources or ())
-                        if name.strip()}
-    for entry in database.entries:
-        if entry['ID'] in seen:
-            raise ValueError('Duplicate citation key: ' + entry['ID'])
-        seen.add(entry['ID'])
-        if (matches_sources(entry, excluded_sources)
-                or not matches_sources(entry, selected_sources)):
-            skipped += 1
-            continue
-        infer_source(entry)
-        destination = directory / pdf_filename(entry)
-        needs_discovery = not any(entry.get(name, '').strip() for name in ('doi', 'url', 'pdf', 'pdf_url'))
-        if destination.exists():
-            if is_pdf(destination):
-                if not needs_discovery:
-                    entry['file'] = str(destination.resolve())
-                    resumed += 1
-                    continue
-            else:
-                raise ValueError('Existing destination is not a PDF: ' + str(destination))
-        urls = []
-        for url in candidate_urls(entry):
-            try:
-                urls.append(clean_url(url))
-            except ValueError as error:
-                logger.error('%s: %s', entry['ID'], error)
-        lookup = discovery_url(entry) if needs_discovery and entry.get('title', '').strip() else None
-        if lookup:
-            urls = [lookup]
-        jobs.append(DownloadJob(entry, destination, deque(urls), discovery_url=lookup))
-    try:
-        with ExitStack() as stack:
-            progress = None
-            if show_progress:
-                from download_progress import DownloadProgress
-                progress = stack.enter_context(DownloadProgress(len(jobs), resumed, skipped))
-            if browser_download is None or browser_fallback is None:
-                from browser_pdf import BrowserPdfDownloader
-                browser = stack.enter_context(BrowserPdfDownloader(
-                    browser_profile, headless=browser_headless))
-                if browser_download is None:
-                    browser_download = lambda url, timeout: browser.download(
-                        url, timeout, progress=progress)
-                if browser_fallback is None:
-                    browser_fallback = lambda url, timeout: browser.download(
-                        url, timeout, strict=False, limiter=limiter,
-                        progress=progress)
-            session = stack.enter_context(requests.Session())
-            session.headers.update({'User-Agent': 'systematic-review-tools/pdf-downloader',
-                                    'Accept': 'application/pdf,text/html;q=0.9,*/*;q=0.5'})
-            downloaded, failed = download_queue(jobs, session, limiter, logger,
-                timeout=timeout, max_retries=max_retries,
-                browser_download=browser_download, browser_fallback=browser_fallback,
-                progress=progress)
-    finally:
-        # Preserve completed file annotations even on Ctrl-C or an unexpected failure.
+    with bibtex_checkpoint(output):
+        database = read_bibtex(source)
+        completed = set()
+        track_bibtex(lambda: new_database(
+            (entry for entry in database.entries if entry['ID'] in completed), database.preambles))
+        limiter = HostRateLimiter(rate)
+        directory.mkdir(parents=True, exist_ok=True)
+        seen, jobs = set(), []
+        resumed, skipped = 0, 0
+        selected_sources = ({name.strip().casefold() for name in sources if name.strip()}
+                            if sources is not None else None)
+        excluded_sources = {name.strip().casefold() for name in (exclude_sources or ())
+                            if name.strip()}
+        for entry in database.entries:
+            if entry['ID'] in seen:
+                raise ValueError('Duplicate citation key: ' + entry['ID'])
+            seen.add(entry['ID'])
+            if (matches_sources(entry, excluded_sources)
+                    or not matches_sources(entry, selected_sources)):
+                skipped += 1
+                completed.add(entry['ID'])
+                continue
+            infer_source(entry)
+            destination = directory / pdf_filename(entry)
+            needs_discovery = not any(entry.get(name, '').strip() for name in ('doi', 'url', 'pdf', 'pdf_url'))
+            if destination.exists():
+                if is_pdf(destination):
+                    if not needs_discovery:
+                        entry['file'] = str(destination.resolve())
+                        resumed += 1
+                        completed.add(entry['ID'])
+                        continue
+                else:
+                    raise ValueError('Existing destination is not a PDF: ' + str(destination))
+            urls = []
+            for url in candidate_urls(entry):
+                try:
+                    urls.append(clean_url(url))
+                except ValueError as error:
+                    logger.error('%s: %s', entry['ID'], error)
+            lookup = discovery_url(entry) if needs_discovery and entry.get('title', '').strip() else None
+            if lookup:
+                urls = [lookup]
+            jobs.append(DownloadJob(entry, destination, deque(urls), discovery_url=lookup))
+        try:
+            with ExitStack() as stack:
+                progress = None
+                if show_progress:
+                    from download_progress import DownloadProgress
+                    progress = stack.enter_context(DownloadProgress(len(jobs), resumed, skipped))
+                if browser_download is None or browser_fallback is None:
+                    from browser_pdf import BrowserPdfDownloader
+                    browser = stack.enter_context(BrowserPdfDownloader(
+                        browser_profile, headless=browser_headless))
+                    if browser_download is None:
+                        browser_download = lambda url, timeout: browser.download(
+                            url, timeout, progress=progress)
+                    if browser_fallback is None:
+                        browser_fallback = lambda url, timeout: browser.download(
+                            url, timeout, strict=False, limiter=limiter,
+                            progress=progress)
+                session = stack.enter_context(requests.Session())
+                session.headers.update({'User-Agent': 'systematic-review-tools/pdf-downloader',
+                                        'Accept': 'application/pdf,text/html;q=0.9,*/*;q=0.5'})
+                downloaded, failed = download_queue(jobs, session, limiter, logger,
+                    timeout=timeout, max_retries=max_retries,
+                    browser_download=browser_download, browser_fallback=browser_fallback,
+                    progress=progress, completed=completed)
+        except Exception:
+            # Preserve the existing recovery behavior for ordinary failures.
+            write_bibtex(database, output)
+            raise
         write_bibtex(database, output)
-    if sources is not None or exclude_sources is not None:
-        logger.info('Skipped %d entries due to source filters.', skipped)
-    return downloaded, resumed, failed
+        if sources is not None or exclude_sources is not None:
+            logger.info('Skipped %d entries due to source filters.', skipped)
+        return downloaded, resumed, failed
 
 
 def positive_number(value):
@@ -498,6 +511,7 @@ def source_name(value):
     return value
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
@@ -551,9 +565,6 @@ def main(argv=None):
         print('Downloaded %d; already saved %d; failed %d. BibTeX: %s' %
               (downloaded, resumed, failed, args.output))
         return 1 if failed else 0
-    except KeyboardInterrupt:
-        logger.error('Interrupted; completed downloads have been recorded.')
-        return 130
     except Exception:
         logger.exception('PDF download failed')
         return 1

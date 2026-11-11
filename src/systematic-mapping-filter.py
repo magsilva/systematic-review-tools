@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import csv
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
 from bibtex_io import read_bibtex, new_database, write_bibtex
 
 import os.path
@@ -28,16 +29,20 @@ class BibtexLinter(object):
         self.output_bibtex_file = bibtex_filename
 
     def fix(self):
-        database = read_bibtex(self.input_bibtex_file)
-        keys = {entry['ID']: self.normalize_id(entry['ID']) for entry in database.entries}
-        if not all(keys.values()) or len(set(keys.values())) != len(keys):
-            raise ValueError('Normalizing citation keys produced empty or duplicate keys.')
-        for entry in database.entries:
-            entry['ID'] = keys[entry['ID']]
-            for field in ('crossref', 'xref'):
-                if field in entry:
-                    entry[field] = keys.get(entry[field], entry[field])
-        write_bibtex(database, self.output_bibtex_file)
+        with bibtex_checkpoint(self.output_bibtex_file):
+            database = read_bibtex(self.input_bibtex_file)
+            keys = {entry['ID']: self.normalize_id(entry['ID']) for entry in database.entries}
+            if not all(keys.values()) or len(set(keys.values())) != len(keys):
+                raise ValueError('Normalizing citation keys produced empty or duplicate keys.')
+            completed = new_database(preambles=database.preambles)
+            track_bibtex(lambda: completed)
+            for entry in database.entries:
+                entry['ID'] = keys[entry['ID']]
+                for field in ('crossref', 'xref'):
+                    if field in entry:
+                        entry[field] = keys.get(entry[field], entry[field])
+                completed.entries.append(entry)
+            write_bibtex(database, self.output_bibtex_file)
 
 
 class BibtexFilter(object):
@@ -79,43 +84,46 @@ class BibtexFilter(object):
         self.output_bibtex_file = bibtex_filename
 
     def apply_filters(self):
-        raw_database = read_bibtex(self.input_bibtex_file, plaintext=True)
-        final_database = new_database(preambles=raw_database.preambles)
+        with bibtex_checkpoint(self.output_bibtex_file):
+            raw_database = read_bibtex(self.input_bibtex_file, plaintext=True)
+            final_database = new_database(preambles=raw_database.preambles)
+            track_bibtex(lambda: final_database)
 
-        with open(self.output_csv_file, 'w', newline='') as csvfile:
-            csvwriter = csv.writer(csvfile, delimiter=',',quotechar='"', quoting=csv.QUOTE_MINIMAL)
-            csv_fields = ['id', 'doi', 'title', 'abstract'];
-            for category in self.search_terms.keys():
-                csv_fields.append(category)
-            csvwriter.writerow(csv_fields)
-            for entry in raw_database.entries:
-                search_results = {}
+            with open(self.output_csv_file, 'w', newline='') as csvfile:
+                csvwriter = csv.writer(csvfile, delimiter=',',quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                csv_fields = ['id', 'doi', 'title', 'abstract'];
                 for category in self.search_terms.keys():
-                    search_results[category] = False
-                    for field in self.search_fields:
-                        for term in self.search_terms[category]:
-                            search_results[category] |= self.has_term(entry, 'plain_' +  field, term)
+                    csv_fields.append(category)
+                csvwriter.writerow(csv_fields)
+                for entry in raw_database.entries:
+                    search_results = {}
+                    for category in self.search_terms.keys():
+                        search_results[category] = False
+                        for field in self.search_fields:
+                            for term in self.search_terms[category]:
+                                search_results[category] |= self.has_term(entry, 'plain_' +  field, term)
 
-                veredict = True
-                for result in search_results.values():
-                    veredict &= result
-                if veredict:
-                    final_database.entries.append(entry)
-                else:
-                    print("Ignoring paper", entry['ID'])
+                    veredict = True
+                    for result in search_results.values():
+                        veredict &= result
+                    if veredict:
+                        final_database.entries.append(entry)
+                    else:
+                        print("Ignoring paper", entry['ID'])
 
-                try:
-                    csv_row = [entry['ID'], entry['doi'], entry['plain_title'], entry['plain_abstract']]
-                except:
-                    csv_row = [entry['ID'], '', entry['plain_title'], '']
-                for category in search_results.keys():
-                    csv_row.append(search_results[category])
-                csvwriter.writerow(csv_row)
+                    try:
+                        csv_row = [entry['ID'], entry['doi'], entry['plain_title'], entry['plain_abstract']]
+                    except KeyError:
+                        csv_row = [entry['ID'], '', entry['plain_title'], '']
+                    for category in search_results.keys():
+                        csv_row.append(search_results[category])
+                    csvwriter.writerow(csv_row)
 
-        write_bibtex(final_database, self.output_bibtex_file, indent='    ')
+            write_bibtex(final_database, self.output_bibtex_file, indent='    ')
 
 
-if __name__ == "__main__":
+@interrupt_exit
+def main():
     bibtex_filename = sys.argv[1]
     basename = os.path.basename(bibtex_filename)
     (filename, extension) = os.path.splitext(basename)
@@ -137,3 +145,7 @@ if __name__ == "__main__":
     bibtex_filter.add_search_terms('control', ['', ''])
     bibtex_filter.add_search_terms('outcome', ['', ''])
     bibtex_filter.apply_filters()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

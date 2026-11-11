@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 import sys
 
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit
 from pico_search import add_pico_arguments, build_search_expression
 import scopus_search
 import acm_search
@@ -106,6 +107,7 @@ def run_pipeline(args, keywords):
         return 0
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
@@ -159,7 +161,8 @@ def main(argv=None):
     try:
         if args.engine is not None or args.filter_pico:
             build_search_expression(**keywords)  # Validate before performing any work.
-        return run_pipeline(args, keywords)
+        with bibtex_checkpoint(args.output):
+            return run_pipeline(args, keywords)
     except ValueError as error:
         parser.error(str(error))
     except OSError as error:

@@ -9,7 +9,8 @@ from urllib.parse import urlencode
 from contextlib import ExitStack
 from browser_session import open_search_browser
 
-from bibtex_io import merge_sources, read_bibtex, write_bibtex
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
+from bibtex_io import merge_sources, new_database, read_bibtex, write_bibtex
 
 
 def build_search_url(query):
@@ -22,13 +23,18 @@ def build_search_url(query):
 def import_bibtex(source, output):
     """Validate a user export, tag every entry with ACM, and atomically save it."""
     source, output = Path(source), Path(output)
-    database = read_bibtex(source, require_titles=True)
-    for entry in database.entries:
-        entry['source'] = merge_sources(entry.get('source', ''), 'ACM')
-    write_bibtex(database, output)
-    return len(database.entries)
+    with bibtex_checkpoint(output):
+        database = read_bibtex(source, require_titles=True)
+        result = new_database(preambles=database.preambles)
+        track_bibtex(lambda: result)
+        for entry in database.entries:
+            entry['source'] = merge_sources(entry.get('source', ''), 'ACM')
+            result.entries.append(entry)
+        write_bibtex(result, output)
+        return len(result.entries)
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     query = parser.add_mutually_exclusive_group(required=True)
@@ -60,34 +66,35 @@ def main(argv=None):
     logger.addHandler(file_handler)
     browsers = ExitStack()
     try:
-        if args.query_file and args.query_file.resolve() == args.output.resolve():
-            raise ValueError('Output and query file must be different files.')
-        expression = (args.query_file.read_text(encoding='utf-8')
-                      if args.query_file else args.query).strip()
-        url = build_search_url(expression)
-        print('Canonical query:\n%s\n\nACM search URL:\n%s' % (expression, url))
-        source = args.import_bibtex
-        if source is None:
-            if not args.no_browser:
-                browsers.enter_context(open_search_browser(url))
-            print('\nIn ACM, verify the query and result count, then use Export Citations.\n'
-                  'Select All results (if available), choose BibTeX, and download the file.\n'
-                  'For exports in batches, combine them into one BibTeX file first.\n'
-                  'Importing validates the file, not its completeness or query provenance.')
-            if not sys.stdin.isatty():
-                print('\nSearch prepared; no papers imported. Rerun with '
-                      '--import-bibtex /path/to/download.bib to finish.')
-                return 0
-            path = input('\nDownloaded BibTeX path (Enter to finish later): ').strip()
-            if not path:
-                print('Search prepared; no papers imported.')
-                return 0
-            source = Path(path).expanduser()
-        if source.resolve() == args.log_file.resolve():
-            raise ValueError('The downloaded BibTeX file must differ from the log file.')
-        count = import_bibtex(source, args.output)
-        print('Imported %d records to %s' % (count, args.output))
-        return 0
+        with bibtex_checkpoint(args.output):
+            if args.query_file and args.query_file.resolve() == args.output.resolve():
+                raise ValueError('Output and query file must be different files.')
+            expression = (args.query_file.read_text(encoding='utf-8')
+                          if args.query_file else args.query).strip()
+            url = build_search_url(expression)
+            print('Canonical query:\n%s\n\nACM search URL:\n%s' % (expression, url))
+            source = args.import_bibtex
+            if source is None:
+                if not args.no_browser:
+                    browsers.enter_context(open_search_browser(url))
+                print('\nIn ACM, verify the query and result count, then use Export Citations.\n'
+                      'Select All results (if available), choose BibTeX, and download the file.\n'
+                      'For exports in batches, combine them into one BibTeX file first.\n'
+                      'Importing validates the file, not its completeness or query provenance.')
+                if not sys.stdin.isatty():
+                    print('\nSearch prepared; no papers imported. Rerun with '
+                          '--import-bibtex /path/to/download.bib to finish.')
+                    return 0
+                path = input('\nDownloaded BibTeX path (Enter to finish later): ').strip()
+                if not path:
+                    print('Search prepared; no papers imported.')
+                    return 0
+                source = Path(path).expanduser()
+            if source.resolve() == args.log_file.resolve():
+                raise ValueError('The downloaded BibTeX file must differ from the log file.')
+            count = import_bibtex(source, args.output)
+            print('Imported %d records to %s' % (count, args.output))
+            return 0
     except Exception:
         logger.exception('ACM browser search/import failed')
         return 1

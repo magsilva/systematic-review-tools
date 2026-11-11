@@ -9,7 +9,8 @@ from pathlib import Path
 import re
 import sys
 
-from bibtex_io import read_bibtex, write_bibtex
+from bibtex_interrupt import bibtex_checkpoint, interrupt_exit, track_bibtex
+from bibtex_io import new_database, read_bibtex, write_bibtex
 from pico_search import add_pico_arguments
 
 
@@ -75,8 +76,12 @@ class PicoCriterion(Criterion):
 
 def filter_entries(entries, criteria):
     """Keep entries satisfying every criterion, preserving their order and metadata."""
+    return list(iter_matches(entries, criteria))
+
+
+def iter_matches(entries, criteria):
     criteria = tuple(criteria)
-    return [dict(entry) for entry in entries if all(rule.accepts(entry) for rule in criteria)]
+    return (dict(entry) for entry in entries if all(rule.accepts(entry) for rule in criteria))
 
 
 def filter_file(source, output, criteria, logger=None):
@@ -84,18 +89,21 @@ def filter_file(source, output, criteria, logger=None):
     source, output = Path(source), Path(output)
     if source.resolve() == output.resolve() or (output.exists() and source.samefile(output)):
         raise ValueError('Output must be a different file from the input.')
-    database = read_bibtex(source)
-    original = database.entries
-    database.entries = filter_entries(original, criteria)
-    removed = {entry['ID'] for entry in original} - {entry['ID'] for entry in database.entries}
-    if logger is not None:
-        for entry in database.entries:
-            for field in ('crossref', 'xref'):
-                if entry.get(field) in removed:
-                    logger.warning('%s refers to filtered-out entry %s through %s',
-                                   entry['ID'], entry[field], field)
-    write_bibtex(database, output)
-    return len(original), len(database.entries)
+    with bibtex_checkpoint(output):
+        database = read_bibtex(source)
+        original = database.entries
+        database = new_database(preambles=database.preambles)
+        track_bibtex(lambda: database)
+        database.entries.extend(iter_matches(original, criteria))
+        removed = {entry['ID'] for entry in original} - {entry['ID'] for entry in database.entries}
+        if logger is not None:
+            for entry in database.entries:
+                for field in ('crossref', 'xref'):
+                    if entry.get(field) in removed:
+                        logger.warning('%s refers to filtered-out entry %s through %s',
+                                       entry['ID'], entry[field], field)
+        write_bibtex(database, output)
+        return len(original), len(database.entries)
 
 
 def entry_type_name(value):
@@ -105,6 +113,7 @@ def entry_type_name(value):
     return value
 
 
+@interrupt_exit
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
