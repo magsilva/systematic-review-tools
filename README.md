@@ -110,6 +110,27 @@ Request failures produce a nonzero exit status and any available partial results
 if requests fail and no references are recovered, an existing output is
 preserved. Input and output must differ. Output is written atomically.
 
+## Find papers that cite a bibliography
+
+```sh
+.venv/bin/python -m pip install -r requirements-references.txt
+.venv/bin/python src/extract_citing_papers.py systematic-search-filtered.bib \
+  --output citing-papers.bib
+```
+
+The script resolves each input in OpenAlex by DOI or OpenAlex ID, or by a
+unique title match corroborated by author or year. It follows OpenAlex's
+incoming citation links and paginates through the results. Set
+`OPENALEX_API_KEY` in your environment for searches that need multiple pages.
+See [OpenAlex API authentication](https://help.openalex.org/api/authentication/).
+
+The output includes authors, title, venue, DOI, year, abstract, and OpenAlex
+keywords when available. Records are deduplicated by DOI or, when absent,
+OpenAlex ID. The `source` field lists the cited input DOIs or BibTeX keys.
+Coverage and missing fields depend on the OpenAlex index. Unmatched inputs or
+request errors are logged and return a nonzero exit code. Available results
+are written to a separate BibTeX file even if some lookups fail.
+
 ## Set operations on BibTeX files
 
 Use `src/bibtex_sets.py` with two or more input files:
