@@ -68,7 +68,7 @@ class ReferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             source, output, log = [Path(folder) / name for name in ('in.bib', 'out.bib', 'log')]
             source.write_text('@article{parent, doi={10.1234/parent}}')
-            args = [str(source), '-o', str(output), '--log-file', str(log)]
+            args = [str(source), '-o', str(output), '--log-file', str(log), '--no-scholar']
             with patch('extract_references.Crossref') as api, contextlib.redirect_stdout(io.StringIO()):
                 api.return_value.work.side_effect = [{'reference': [{'DOI': '10.1234/a'}]}, work('10.1234/a')]
                 self.assertEqual(main(args), 0)
@@ -79,3 +79,98 @@ class ReferenceTests(unittest.TestCase):
                 self.assertEqual(main(args), 1)
             self.assertEqual(output.read_bytes(), previous)
             self.assertIn('offline', log.read_text())
+
+    def test_scholar_fallback_recovers_parent_and_cited_paper(self):
+        from extract_references import doi_of, normalized
+        from scholar_references import Scholar
+
+        logger = logging.getLogger('scholar-test')
+        scholar = Scholar(entries=[
+            {'ID': 'parent', 'title': 'Parent paper', 'year': '2022', 'doi': '10.1234/parent'},
+            {'ID': 'cited', 'ENTRYTYPE': 'article', 'title': 'A cited paper', 'author': 'Doe, Jane',
+             'year': '2020', 'journal': 'Example Journal', 'source': 'prior'},
+        ], logger=logger, identify=doi_of, normalize=normalized)
+        client = Mock()
+        client.find.return_value = None
+        client.work.return_value = {'reference': [
+            {'article-title': 'A cited paper', 'author': 'Doe', 'year': '2020'}]}
+        records, stats = extract([{'ID': 'parent', 'title': 'Parent paper', 'year': '2022'}],
+                                 client, logger, scholar)
+        client.work.assert_called_once_with('10.1234/parent')
+        self.assertEqual(records[0]['source'], '10.1234/parent; prior')
+        self.assertEqual(records[0]['author'], 'Doe, Jane')
+        self.assertEqual(records[0]['journal'], 'Example Journal')
+        self.assertEqual(stats['scholar_matches'], 1)
+        self.assertEqual(stats['unresolved'], 0)
+
+    def test_scholar_rejects_conflicting_doi_and_does_not_replace_crossref(self):
+        from extract_references import doi_of, normalized
+        from scholar_references import Scholar
+        logger = logging.getLogger('scholar-test')
+        scholar = Scholar(entries=[
+            {'ID': 'wrong', 'title': 'Same title', 'year': '2020', 'doi': '10.1234/wrong'},
+        ], logger=logger, identify=doi_of, normalize=normalized)
+        self.assertIsNone(scholar.find(title='Same title', year='2020', doi='10.1234/right'))
+        client, fallback = Mock(), Mock()
+        client.work.side_effect = [{'reference': [{'DOI': '10.1234/cited'}]}, work('10.1234/cited')]
+        extract([{'ID': 'parent', 'doi': '10.1234/parent'}], client, logger, fallback)
+        fallback.find.assert_not_called()
+
+    def test_scholar_is_skipped_for_incomplete_crossref_records_and_request_errors(self):
+        client, scholar = Mock(), Mock()
+        client.work.side_effect = [
+            {'reference': [{'DOI': '10.1234/sparse'}, {'DOI': '10.1234/offline'}]},
+            {'DOI': '10.1234/sparse'},
+            requests.Timeout('reference lookup timed out'),
+            requests.Timeout('parent lookup timed out'),
+            {'DOI': '10.1234/no-references'},
+        ]
+        logger = logging.getLogger('scholar-test')
+        with self.assertLogs(logger, level='WARNING'):
+            records, stats = extract([
+                {'ID': 'parent', 'doi': '10.1234/parent'},
+                {'ID': 'offline', 'doi': '10.1234/offline-parent'},
+                {'ID': 'empty', 'doi': '10.1234/no-references'},
+            ], client, logger, scholar)
+        scholar.find.assert_not_called()
+        self.assertEqual(len(records), 2)
+        self.assertEqual(stats['errors'], 2)
+        self.assertEqual(stats['unresolved'], 1)
+
+    def test_online_scholar_matches_verified_export_and_stops_after_block(self):
+        from extract_references import doi_of, normalized
+        from scholar_references import Scholar
+        scholar = Scholar(entries=[], logger=logging.getLogger('scholar-test'),
+                          identify=doi_of, normalize=normalized, online=True)
+        match = {'ID': 'cited', 'title': 'A cited paper', 'author': 'Doe, Jane', 'year': '2020'}
+        scholar._search = Mock(side_effect=[[dict(match, author='Other, Jane'), match],
+                                            RuntimeError('verification required')])
+        self.assertEqual(scholar.find(title='A cited paper', author='Doe', year='2020'), match)
+        with self.assertLogs('scholar-test', level='WARNING'):
+            self.assertIsNone(scholar.find(title='Another paper', year='2020'))
+        self.assertIsNone(scholar.find(title='Third paper', year='2020'))
+        self.assertEqual(scholar._search.call_count, 2)
+
+    def test_browser_reads_matching_scholar_bibtex_export(self):
+        from extract_references import doi_of, normalized
+        from scholar_references import Scholar
+        scholar = Scholar(entries=[], logger=logging.getLogger('scholar-test'),
+                          identify=doi_of, normalize=normalized, online=True)
+        page = Mock(url='https://scholar.google.com/scholar?q=paper')
+        page.goto.return_value.status = 200
+        result = Mock()
+        heading, cite = Mock(), Mock()
+        heading.count.return_value = cite.count.return_value = 1
+        heading.inner_text.return_value = 'A cited paper'
+        heading.locator.return_value.count.return_value = 0
+        result.locator.side_effect = lambda selector: {'.gs_rt': heading, '.gs_or_cit': cite}[selector]
+        results = Mock()
+        results.count.return_value = 1
+        results.nth.return_value = result
+        page.locator.side_effect = lambda selector: results if selector == '.gs_r.gs_or.gs_scl' else Mock(count=Mock(return_value=0))
+        page.get_by_role.return_value.get_attribute.return_value = 'https://scholar.googleusercontent.com/scholar.bib?q=paper'
+        page.request.get.return_value.text.return_value = '@article{a, title={A cited paper}, author={Doe, Jane}, year={2020}}'
+        scholar._browser = Mock(return_value=page)
+        self.assertEqual(scholar.find(title='A cited paper', author='Doe', year='2020')['ID'], 'a')
+        cite.click.assert_called_once()
+        page.request.get.assert_called_once()

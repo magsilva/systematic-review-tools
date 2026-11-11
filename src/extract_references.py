@@ -17,6 +17,7 @@ import requests
 
 from bibtex_io import escape_bibtex, merge_sources, new_database, read_bibtex, write_bibtex
 from merge_bibtex import normalize_doi
+from scholar_references import Scholar
 
 WORKS = 'https://api.crossref.org/works'
 TYPES = {'journal-article': 'article', 'proceedings-article': 'inproceedings',
@@ -147,28 +148,41 @@ def reference_fields(ref, work):
     return dict(entry, ENTRYTYPE=kind)
 
 
-def extract(entries, client, logger):
+def extract(entries, client, logger, scholar=None):
     results, stats = {}, Counter()
+    lookup_failed = object()
 
-    def attempt(operation, label):
+    def attempt(operation, label, *, on_error=None):
         try:
             return operation()
-        except (requests.RequestException, ValueError, KeyError) as error:
+        except (requests.RequestException, ValueError, KeyError, OSError) as error:
             logger.warning('%s: %s', label, error)
             stats['errors'] += 1
-            return None
+            return on_error
 
     for parent in entries:
         doi = doi_of(parent)
         source = doi or parent['ID']
         if doi:
-            work = attempt(lambda: client.work(doi), source)
+            work = attempt(lambda: client.work(doi), source, on_error=lookup_failed)
         else:
             work = attempt(lambda: client.find(title=parent.get('title', ''),
                                                author=parent.get('author', '').split(' and ')[0],
-                                               year=parent.get('year', '')), source)
-            if work:
+                                               year=parent.get('year', '')), source,
+                           on_error=lookup_failed)
+            if work is not None and work is not lookup_failed:
                 source = doi_of(work) or source
+        if work is None and scholar is not None:
+            found = attempt(lambda: scholar.find(
+                doi=doi, title=parent.get('title', ''),
+                author=parent.get('author', '').split(' and ')[0],
+                year=parent.get('year', '')), source + ' (Google Scholar)')
+            recovered = doi_of(found) if found else ''
+            if recovered and recovered != doi:
+                work = attempt(lambda: client.work(recovered), recovered)
+                source = recovered
+        if work is lookup_failed:
+            work = None
         refs = work.get('reference', []) if work else []
         if not refs:
             logger.warning('%s: no reference list available from Crossref', source)
@@ -178,13 +192,38 @@ def extract(entries, client, logger):
             cited_doi = doi_of(ref)
             label = '%s reference %d' % (source, position)
             if cited_doi:
-                metadata = attempt(lambda: client.work(cited_doi), label)
+                metadata = attempt(lambda: client.work(cited_doi), label, on_error=lookup_failed)
             else:
                 metadata = attempt(lambda: client.find(
                     title=ref.get('article-title', ''), author=ref.get('author', ''),
-                    year=str(ref.get('year', '')), citation=ref.get('unstructured', '')), label)
+                    year=str(ref.get('year', '')), citation=ref.get('unstructured', '')), label,
+                    on_error=lookup_failed)
+            scholar_entry = None
+            use_scholar = metadata is None and scholar is not None
+            if metadata is lookup_failed:
+                metadata = None
             entry = reference_fields(ref, metadata)
-            if not metadata:
+            if use_scholar:
+                scholar_entry = attempt(lambda: scholar.find(
+                    doi=cited_doi, title=ref.get('article-title', ''),
+                    author=ref.get('author', ''), year=str(ref.get('year', '')),
+                    citation=ref.get('unstructured', '')), label + ' (Google Scholar)')
+                if scholar_entry:
+                    recovered = doi_of(scholar_entry) or cited_doi
+                    if recovered and recovered != cited_doi:
+                        metadata = attempt(lambda: client.work(recovered), label)
+                        if metadata:
+                            entry = reference_fields(ref, metadata)
+                    for field in ('author', 'title', 'journal', 'booktitle', 'year',
+                                  'abstract', 'keywords', 'publisher', 'url'):
+                        if scholar_entry.get(field) and (not metadata or field not in entry):
+                            entry[field] = scholar_entry[field]
+                    if recovered:
+                        entry['doi'] = recovered
+                    if entry['ENTRYTYPE'] == 'misc':
+                        entry['ENTRYTYPE'] = scholar_entry['ENTRYTYPE']
+                    stats['scholar_matches'] += 1
+            if metadata is None and not scholar_entry:
                 stats['unresolved'] += 1
                 logger.warning('%s: no verified metadata match; retaining deposited citation', label)
                 if len(entry) == 1:
@@ -204,7 +243,8 @@ def extract(entries, client, logger):
                     stored[field] = value
                 else:
                     stored.setdefault(field, value)
-            stored['source'] = merge_sources(stored.get('source', ''), source)
+            stored['source'] = merge_sources(stored.get('source', ''),
+                                              (scholar_entry or {}).get('source', ''), source)
     return list(results.values()), stats
 
 
@@ -216,41 +256,60 @@ def main(argv=None):
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--interval', type=float, default=0.5, help='Minimum seconds between requests.')
     parser.add_argument('--log-file', type=Path, default=Path('extract_references.log'))
+    parser.add_argument('--scholar-bibtex', type=Path,
+                        help='Use an existing Google Scholar BibTeX export as a fallback.')
+    parser.add_argument('--no-scholar', action='store_true', help='Disable Google Scholar fallback.')
+    parser.add_argument('--scholar-manual', action='store_true',
+                        help='Check supplied Scholar exports and log unresolved lookup links.')
     args = parser.parse_args(argv)
+    if args.no_scholar and args.scholar_bibtex:
+        parser.error('--no-scholar and --scholar-bibtex cannot be combined.')
     if not all(math.isfinite(v) and v > 0 for v in (args.timeout, args.interval)):
         parser.error('--timeout and --interval must be finite positive numbers.')
     paths = (args.input, args.output, args.log_file)
+    if args.scholar_bibtex:
+        paths += (args.scholar_bibtex,)
     for index, a in enumerate(paths):
         for b in paths[index + 1:]:
             if a.resolve() == b.resolve() or (a.exists() and b.exists() and a.samefile(b)):
                 parser.error('Input, output and log must be different files.')
     logger = logging.Logger('extract_references')
+    logger.setLevel(logging.INFO)
     logger.addHandler(logging.StreamHandler(sys.stderr))
     try:
         log = logging.FileHandler(args.log_file, encoding='utf-8')
     except OSError:
         logger.exception('Cannot open reference extraction log')
         return 1
+    scholar = None
     try:
         logger.addHandler(log)
         entries = read_bibtex(args.input).entries
+        scholar = None if args.no_scholar else Scholar(
+            entries=read_bibtex(args.scholar_bibtex).entries if args.scholar_bibtex else [],
+            logger=logger, identify=doi_of, normalize=normalized,
+            online=not args.scholar_manual, timeout=args.timeout)
         with requests.Session() as session:
             session.headers['User-Agent'] = 'systematic-review-tools/reference-extractor'
             results, stats = extract(entries, Crossref(session, mailto=args.mailto,
-                                                      timeout=args.timeout, interval=args.interval), logger)
+                                                      timeout=args.timeout, interval=args.interval), logger, scholar)
         if entries and not results and stats['errors']:
             raise RuntimeError('No references retrieved; preserving any existing output.')
         write_bibtex(new_database(results), args.output)
         print('Read %d papers; exported %d unique references from %d citations. '
-              '%d papers without reference lists; %d unresolved citations; %d request errors. BibTeX: %s'
+              '%d papers without reference lists; %d Scholar matches; %d unresolved citations; %d errors. BibTeX: %s'
               % (len(entries), len(results), stats['references'], stats['parents_without_references'],
-                 stats['unresolved'], stats['errors'], args.output))
+                 stats['scholar_matches'], stats['unresolved'], stats['errors'], args.output))
         return 1 if stats['errors'] else 0
     except Exception:
         logger.exception('Reference extraction failed')
         return 1
     finally:
-        log.close()
+        try:
+            if scholar is not None:
+                scholar.close()
+        finally:
+            log.close()
 
 
 if __name__ == '__main__':

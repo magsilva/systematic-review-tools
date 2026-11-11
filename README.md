@@ -89,6 +89,20 @@ with their deposited details; raw citation text is stored in `note` when
 available. Only deposited reference lists are covered: a missing list does not
 mean that the paper has no references. The script does not access full text.
 
+When Crossref cannot identify an input paper or cited work, the extractor
+searches Google Scholar with Playwright and Camoufox. Install
+`requirements-browser.txt` and run `.venv/bin/python -m camoufox fetch` to
+enable browser lookups. The script checks up to five results and validates a
+matching BibTeX citation before using it. It stops automated Scholar lookups
+if the site blocks access or requests verification.
+
+Use `--scholar-bibtex scholar-citations.bib` to check local exports first,
+`--scholar-manual` to limit lookup to supplied exports, or `--no-scholar`
+to disable the fallback entirely. Runs proceed unattended, logging lookup links
+for unresolved items and retaining deposited citations. A Scholar citation can
+fill metadata or recover a DOI for a Crossref retry. Availability of a parent's
+reference list, abstracts, and keywords still depends on the metadata sources.
+
 Requests are sequential and cached only during the run. Use `--interval`
 (default 0.5 seconds) and `--timeout` (default 30 seconds) to tune API access.
 Warnings and errors go to stderr and `extract_references.log` (or `--log-file`).
