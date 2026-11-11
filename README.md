@@ -725,3 +725,8 @@ Web search and browser PDF retrieval use Camoufox through Playwright. Install
 Search sessions use a separate `.acm-search-camoufox` profile; browser caching
 is disabled. ACM search windows stay open while the interactive CLI waits for
 the citation export path. Use `--no-browser` to prepare a URL without launching.
+
+OpenAlex clients automatically read `[openalex]` → `api_key` from
+`settings.local.ini` in the current working directory. A nonempty file value
+takes precedence over `OPENALEX_API_KEY`. If the file or key is absent or the
+key is blank, the environment variable is used.

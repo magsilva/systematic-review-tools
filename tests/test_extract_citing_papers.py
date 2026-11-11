@@ -43,7 +43,8 @@ class ForwardCitationTests(unittest.TestCase):
                 self.assertEqual(params['cursor'], 'next')
                 return {'results': [second], 'meta': {'count': 2}}
 
-            with patch.object(OpenAlex, 'get', autospec=True, side_effect=api), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(OpenAlex, 'get', autospec=True, side_effect=api), \
+                    patch('extract_citing_papers.configure_session'), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(main([str(source), '-o', str(output), '--log-file', str(log)]), 0)
             records = read_bibtex(output).entries
             self.assertEqual(len(records), 2)

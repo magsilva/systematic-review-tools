@@ -2,6 +2,8 @@
 
 import os
 import re
+from configparser import ConfigParser, Error as ConfigError
+from pathlib import Path
 from urllib.parse import quote
 
 from requests.adapters import HTTPAdapter
@@ -134,9 +136,20 @@ def citation_entry(work):
     return entry
 
 
-def configure_session(session):
+def configure_session(session, config_path=Path('settings.local.ini')):
     session.headers['User-Agent'] = 'systematic-review-tools'
-    key = os.environ.get('OPENALEX_API_KEY', '').strip()
+    config = ConfigParser(interpolation=None)
+    path = Path(config_path)
+    try:
+        with path.open(encoding='utf-8-sig') as stream:
+            config.read_file(stream)
+    except FileNotFoundError:
+        pass
+    except (ConfigError, UnicodeError):
+        raise ValueError(f'Invalid INI configuration in {path}.') from None
+    key = config.get('openalex', 'api_key', fallback='').strip()
+    if not key:
+        key = os.environ.get('OPENALEX_API_KEY', '').strip()
     if key:
         session.headers['Authorization'] = 'Bearer ' + key
     session.mount('https://api.openalex.org/', HTTPAdapter(max_retries=Retry(
