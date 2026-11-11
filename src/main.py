@@ -11,6 +11,7 @@ import sys
 from pico_search import add_pico_arguments, build_search_expression
 import scopus_search
 import acm_search
+import sol_search
 import filter_bibtex
 import download_pdfs
 
@@ -43,8 +44,18 @@ def run_acm(args, keywords):
     return acm_search.main(options)
 
 
+def run_sol(args, keywords):
+    """Send the canonical PICO expression to SOL's automated browser runner."""
+    options = ['--query', build_search_expression(**keywords),
+               '--output', str(args.output), '--log-file', str(args.log_file),
+               '--timeout', str(args.timeout)]
+    if args.show_browser:
+        options.append('--show-browser')
+    return sol_search.main(options)
+
+
 # Register an adapter here to expose another search engine through the console.
-SEARCH_ENGINES = {'scopus': run_scopus, 'acm': run_acm}
+SEARCH_ENGINES = {'scopus': run_scopus, 'acm': run_acm, 'sol': run_sol}
 
 
 def run_pipeline(args, keywords):
@@ -130,9 +141,9 @@ def main(argv=None):
         parser.error('--max-retries must not be negative.')
     if args.input is not None and (args.import_bibtex or args.no_browser or args.config_path or args.refresh or args.non_subscriber):
         parser.error('Search-specific options cannot be used with --input.')
-    if args.engine == 'scopus' and (args.import_bibtex is not None or args.no_browser):
+    if args.engine != 'acm' and (args.import_bibtex is not None or args.no_browser):
         parser.error('--import-bibtex and --no-browser apply only to ACM.')
-    if args.engine == 'acm' and (args.config_path is not None or args.refresh or args.non_subscriber):
+    if args.engine != 'scopus' and (args.config_path is not None or args.refresh or args.non_subscriber):
         parser.error('--config-path, --refresh and --non-subscriber apply only to Scopus.')
     if args.log_file is None:
         args.log_file = Path(args.engine + '_search.log' if args.engine else 'review_pipeline.log')
