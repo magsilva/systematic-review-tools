@@ -25,11 +25,17 @@ class BibtexDiagnosticsTests(unittest.TestCase):
         self.assertEqual(caught.exception.line, 3)
         self.assertIn('undefinedmacro', str(caught.exception))
 
-    def test_comments_and_unparsed_text(self):
-        for block in ('@comment{A comment}', 'not bibtex'):
-            with self.subTest(block=block), self.assertRaises(BibtexParseError) as caught:
-                parse_bibtex('\n\n' + block, 'input.bib')
-            self.assertEqual(caught.exception.line, 3)
+    def test_explicit_comments_are_ignored(self):
+        content = ('@Comment{jabref-meta: databaseType:bibtex;}\n'
+                   '@article{paper, title={A paper}}\n'
+                   '@comment{A second comment with {nested braces}}\n')
+        database = parse_bibtex(content, 'input.bib', require_titles=True)
+        self.assertEqual([entry['ID'] for entry in database.entries], ['paper'])
+
+    def test_unparsed_text_after_comment_reports_its_line(self):
+        with self.assertRaises(BibtexParseError) as caught:
+            parse_bibtex('@comment{A comment}\n\nnot bibtex', 'input.bib')
+        self.assertEqual(caught.exception.line, 3)
 
     def test_missing_title_reports_entry_line(self):
         with self.assertRaises(BibtexParseError) as caught:

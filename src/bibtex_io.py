@@ -113,10 +113,11 @@ class BibtexParseError(ValueError):
 
 def parse_bibtex(content, source='<string>', *, require_titles=False, plaintext=False,
                  inherit_crossref=False):
-    """Parse with v2 middleware and reject skipped blocks with source lines."""
+    """Skip explicit comments and report malformed blocks with source lines."""
     import bibtexparser
     from bibtexparser.middlewares import NormalizeFieldKeys, default_parse_stack
     from bibtexparser.middlewares import LibraryMiddleware
+    from bibtexparser.model import ImplicitComment
 
     class ValidateReferences(LibraryMiddleware):
         def transform(self, library):
@@ -142,11 +143,13 @@ def parse_bibtex(content, source='<string>', *, require_titles=False, plaintext=
     library = bibtexparser.parse_string(
         balance_literal_braces(content),
         parse_stack=[ValidateReferences(), *default_parse_stack(), NormalizeFieldKeys()])
-    rejected = list(library.failed_blocks) + list(library.comments)
+    rejected = list(library.failed_blocks) + [
+        block for block in library.comments if isinstance(block, ImplicitComment)
+    ]
     if rejected:
         block = min(rejected, key=lambda block: block.start_line or 0)
         raise BibtexParseError(source, (block.start_line or 0) + 1,
-                               'Unparsed content or comments; check the BibTeX record/block starting here.')
+                               'Unparsed content; check the BibTeX record/block starting here.')
     for entry in library.entries:
         if require_titles and not entry.get('title'):
             raise BibtexParseError(source, (entry.start_line or 0) + 1,

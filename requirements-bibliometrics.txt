@@ -1,0 +1,2 @@
+-r requirements-references.txt
+pylatexenc==2.10

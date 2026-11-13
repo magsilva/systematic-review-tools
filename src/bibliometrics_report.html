@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bibliometrics report</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #17243a;
+    --muted: #51617a;
+    --accent: #2456a2;
+    --rule: #dce4ef;
+    background: #f2f5fa;
+    color: var(--ink);
+    font-family: "Atkinson Hyperlegible Next", "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 1240px; margin: auto; padding: 32px clamp(16px, 4vw, 52px) 48px; }
+  header { padding: clamp(24px, 5vw, 52px); border-radius: 20px; background: #142543; color: #fff; }
+  h1 { margin: 0 0 10px; font: 650 clamp(2.25rem, 5vw, 4rem)/1.07 "Instrument Serif", Georgia, serif; }
+  header p { margin: 0; color: #d5e2fa; overflow-wrap: anywhere; }
+  .totals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 28px 0 0; }
+  .total { padding-top: 14px; border-top: 1px solid #52627e; }
+  .total dt { color: #d5e2fa; font-size: .875rem; }
+  .total dd { margin: 4px 0 0; font-size: clamp(1.4rem, 3vw, 2.3rem); font-variant-numeric: tabular-nums; }
+  nav { display: flex; gap: 20px; padding: 22px 2px; }
+  a { color: var(--accent); text-underline-offset: .2em; }
+  .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+  .panel { min-width: 0; border: 1px solid var(--rule); border-radius: 14px; background: #fff; padding: clamp(14px, 2.4vw, 26px); }
+  h2 { margin: 0 0 12px; font-size: 1.25rem; letter-spacing: -.02em; }
+  .bars { width: 100%; height: auto; display: block; overflow: visible; }
+  .bars text { fill: var(--ink); dominant-baseline: middle; font-size: 14px; }
+  .bar-count { font-weight: 650; }
+  .bar-fill { fill: #3672c5; }
+  .bar-track { fill: #e8eef7; }
+  .empty, .legend, .panel-heading p { color: var(--muted); }
+  .network-panel { margin-top: 16px; }
+  .panel-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+  .panel-heading h2 { margin-bottom: 4px; }
+  .panel-heading p { margin: 0 0 16px; }
+  .panel-heading a { white-space: nowrap; }
+  .network-frame { overflow: auto; max-height: 660px; background: #f5f8fd; border: 1px solid var(--rule); border-radius: 10px; }
+  .network { display: block; min-width: 640px; width: 100%; }
+  .network .link { stroke: #536fae; opacity: .46; }
+  .network .node { fill: #2456a2; stroke: #fff; stroke-width: 1; }
+  .network .isolated { fill: #9aabc5; }
+  .network .node:hover { fill: #b24e21; stroke-width: 2; }
+  .legend { margin: 12px 0 0; line-height: 1.5; font-size: .9rem; }
+  @media (max-width: 730px) { .charts, .totals { grid-template-columns: repeat(2, minmax(0, 1fr)); } .charts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Bibliometrics report</h1>
+    <p>$source</p>
+    <dl class="totals">
+      <div class="total"><dt>Papers</dt><dd>$papers</dd></div>
+      <div class="total"><dt>Authors</dt><dd>$authors</dd></div>
+      <div class="total"><dt>Coauthor links</dt><dd>$collaborations</dd></div>
+      <div class="total"><dt>Citation links</dt><dd>$citations</dd></div>
+    </dl>
+  </header>
+  <nav aria-label="Report sections"><a href="#publications">Publication statistics</a><a href="#networks">Networks</a></nav>
+  <div class="charts" id="publications">$charts</div>
+  <div id="networks">$networks</div>
+</main>
+</body>
+</html>

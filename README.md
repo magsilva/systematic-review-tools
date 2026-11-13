@@ -122,6 +122,40 @@ results. No PDFs are downloaded unless `main.py --download-pdfs` is supplied.
 parameters, pagination, and citation endpoint. This runner uses the project's
 shared browser and `bibtexparser==2.1.0` infrastructure directly.
 
+## Bibliometrics
+
+```sh
+.venv/bin/python -m pip install -r requirements-bibliometrics.txt
+.venv/bin/python src/bibliometrics.py papers.bib --output-dir analysis --top 15
+```
+
+The command prints papers per year and ranks events, journals, and authors by
+paper count. It uses the event title when present and the proceedings title
+for conference entries otherwise. Author counts normalize BibTeX name order,
+case, and LaTeX accents. They do not disambiguate people with identical names
+or infer whether initials and full names refer to the same person. Use a
+deduplicated bibliography if your input contains repeated papers.
+
+Open `report.html` in the output directory to view the charts and both networks
+as inline SVG. The page works offline with a browser and needs no server.
+Hover over a network node to see its author or paper label.
+
+Open the two GraphML files in a graph viewer such as Gephi.
+
+- `coauthors.graphml` has an undirected edge weighted by the number of
+  papers each pair wrote together. It includes authors of single-author papers.
+- `citations.graphml` has a directed edge from the citing paper to the cited
+  paper. It includes all input papers, even those with no known links.
+
+Citation edges come from exact BibTeX keys, DOIs, or OpenAlex IDs in
+`references`, `cites`, `cited-references`, `cited_references`, or
+`referenced_works` fields. Separate identifiers with semicolons, commas, or
+newlines. You can also pass outputs from the citation extraction scripts
+with `--cited-bibtex` and `--citing-bibtex`, respectively. Add `--crossref`
+to look up deposited DOI references online, with an optional `--mailto`.
+Only links between papers in the main input file are included. If citation
+metadata is missing, the graph can have few or no edges.
+
 ## Extract cited papers
 
 Use the [Crossref REST API](https://www.crossref.org/documentation/retrieve-metadata/rest-api/)
@@ -554,15 +588,15 @@ sources in older files are not inferred from filenames or publishers.
 
 The script expands BibTeX string macros, preserves Unicode and distinct preambles,
 and writes a UTF-8 file atomically. Input files must differ from the output file.
-Empty input files are allowed. Unparsed content/comments cause an error to avoid
-silently discarding malformed entries; remove comments before merging. Unresolved
+Empty input files are allowed. Explicit `@Comment` blocks are skipped. Malformed
+entries and unparsed text cause an error. Unresolved
 references produce warnings. Errors and conflict warnings go to stderr and
 `merge_bibtex.log` (override with `--log-file`). Exit status is 0 on success and
 1 on failure. The console reports the input, output, and merged duplicate counts.
 
 BibTeX parsing errors in merges and ACM imports include the input filename and
 one-based line number in both stderr and the log, for example
-`papers.bib: line 42: Unparsed content or comments ...`. For a malformed entry
+`papers.bib: line 42: Unparsed content ...`. For a malformed entry
 or block, the line identifies its beginning; missing-title and macro-expansion
 errors identify the related entry/declaration. These diagnostics retain original
 line numbers when literal braces are normalized during merging.
@@ -642,7 +676,8 @@ ACM errors are recorded in `acm_search.log` and stderr (override with
 `--log-file`). A successful preparation exits 0 but explicitly reports that
 no papers have been imported; a successful import reports the parsed record
 count. Invalid imports exit 1 and preserve existing output. Imports must be
-UTF-8 BibTeX with titled entries and no unparsed text/comments. Exported fields
+UTF-8 BibTeX with titled entries. Explicit `@Comment` blocks are skipped, and
+unparsed text causes an error. Exported fields
 are retained semantically, with an added ACM source (unioned with any existing
 sources). The importer rewrites BibTeX formatting and expands string macros.
 Validation cannot establish that an export
